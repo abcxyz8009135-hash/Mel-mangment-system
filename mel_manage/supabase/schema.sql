@@ -1,0 +1,446 @@
+-- =====================================================================
+-- Mel Management — database schema
+-- Run ONCE per Supabase project: Dashboard → SQL Editor → New query →
+-- paste this whole file → Run.
+-- Each business (copy of the app) has its own Supabase project, so
+-- run this in both projects.
+-- =====================================================================
+
+
+-- ---------------------------------------------------------------------
+-- Profiles: one row per login. Role is set by the database owner only.
+-- ---------------------------------------------------------------------
+create table if not exists public.profiles (
+  id          uuid primary key references auth.users (id) on delete restrict,
+  full_name   text not null,
+  role        text not null default 'staff' check (role in ('admin', 'staff')),
+  active      boolean not null default true,
+  created_at  timestamptz not null default now()
+);
+
+-- Create a profile automatically whenever a user is added in the dashboard.
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, full_name)
+  values (new.id, coalesce(new.raw_user_meta_data ->> 'full_name', split_part(new.email, '@', 1)))
+  on conflict (id) do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
+
+
+-- ---------------------------------------------------------------------
+-- Helpers used by access rules
+-- ---------------------------------------------------------------------
+create or replace function public.is_active_user()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (select 1 from public.profiles where id = auth.uid() and active);
+$$;
+
+create or replace function public.is_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (select 1 from public.profiles where id = auth.uid() and active and role = 'admin');
+$$;
+
+
+-- ---------------------------------------------------------------------
+-- Session calculation (authoritative copy).
+-- KEEP IN SYNC with src/functions/calcBalance.js — rates, tolerance and
+-- formulas must match. The app's copy is only a preview; this one decides
+-- Match / Over / Short and therefore whether approval is needed.
+-- ---------------------------------------------------------------------
+create or replace function public.num_or_zero(v jsonb, k text)
+returns numeric
+language sql
+immutable
+as $$
+  select coalesce(nullif(v ->> k, '')::numeric, 0);
+$$;
+
+create or replace function public.clean_values(v jsonb)
+returns jsonb
+language sql
+immutable
+as $$
+  select jsonb_build_object(
+    'tele',       public.num_or_zero(v, 'tele'),
+    'reddy',      public.num_or_zero(v, 'reddy'),
+    'deposit',    public.num_or_zero(v, 'deposit'),
+    'withdrawal', public.num_or_zero(v, 'withdrawal')
+  );
+$$;
+
+create or replace function public.calc_session(s jsonb, e jsonb)
+returns jsonb
+language plpgsql
+immutable
+as $$
+declare
+  deposit_rate    constant numeric := 0.03;
+  withdrawal_rate constant numeric := 0.02;
+  match_tolerance constant numeric := 150;
+
+  s_tele numeric := public.num_or_zero(s, 'tele');
+  s_reddy numeric := public.num_or_zero(s, 'reddy');
+  s_deposit numeric := public.num_or_zero(s, 'deposit');
+  s_withdrawal numeric := public.num_or_zero(s, 'withdrawal');
+  e_tele numeric := public.num_or_zero(e, 'tele');
+  e_reddy numeric := public.num_or_zero(e, 'reddy');
+  e_deposit numeric := public.num_or_zero(e, 'deposit');
+  e_withdrawal numeric := public.num_or_zero(e, 'withdrawal');
+
+  start_total numeric;
+  end_total numeric;
+  session_profit numeric;
+  deposit_in numeric;
+  withdrawal_in numeric;
+  deposit_comm numeric;
+  withdrawal_comm numeric;
+  total_comm numeric;
+  diff numeric;
+  status text;
+  expected_tele numeric;
+  expected_reddy numeric;
+  warnings text[] := '{}';
+begin
+  start_total := s_tele + s_reddy;
+  end_total := e_tele + e_reddy;
+  session_profit := end_total - start_total;
+
+  deposit_in := e_deposit - s_deposit;
+  withdrawal_in := e_withdrawal - s_withdrawal;
+  deposit_comm := deposit_in * deposit_rate;
+  withdrawal_comm := withdrawal_in * withdrawal_rate;
+  total_comm := deposit_comm + withdrawal_comm;
+
+  diff := session_profit - total_comm;
+  status := case
+    when diff > match_tolerance then 'Over'
+    when diff < -match_tolerance then 'Short'
+    else 'Match'
+  end;
+
+  expected_tele := s_tele + (deposit_in - withdrawal_in);
+  expected_reddy := s_reddy + (withdrawal_in * (1 + withdrawal_rate) - deposit_in * (1 - deposit_rate));
+
+  if deposit_in < 0 then
+    warnings := array_append(warnings, 'End deposit is lower than start deposit.');
+  end if;
+  if withdrawal_in < 0 then
+    warnings := array_append(warnings, 'End withdrawal is lower than start withdrawal.');
+  end if;
+
+  return jsonb_build_object(
+    'startTotal', start_total,
+    'endTotal', end_total,
+    'sessionProfit', session_profit,
+    'depositInSession', deposit_in,
+    'withdrawalInSession', withdrawal_in,
+    'depositCommission', deposit_comm,
+    'withdrawalCommission', withdrawal_comm,
+    'totalCommission', total_comm,
+    'difference', diff,
+    'status', status,
+    'expectedTele', expected_tele,
+    'expectedReddy', expected_reddy,
+    'actualTele', e_tele,
+    'actualReddy', e_reddy,
+    'teleGap', e_tele - expected_tele,
+    'reddyGap', e_reddy - expected_reddy,
+    'warnings', to_jsonb(warnings)
+  );
+end;
+$$;
+
+
+-- ---------------------------------------------------------------------
+-- Sessions
+-- ---------------------------------------------------------------------
+create table if not exists public.sessions (
+  id               bigint generated always as identity primary key,
+  session_date     date not null,
+  session_slot     text not null check (session_slot in ('Session 1', 'Session 2', 'Session 3')),
+  submitted_by     uuid not null references public.profiles (id) on delete restrict,
+  submitter_name   text not null,          -- copy of the name at submission time
+  start_values     jsonb not null,
+  end_values       jsonb not null,
+  result           jsonb not null,
+  calc_status      text not null check (calc_status in ('Match', 'Over', 'Short')),
+  approval_status  text not null check (approval_status in ('pending', 'approved', 'rejected')),
+  reviewed_by      uuid references public.profiles (id) on delete restrict,
+  reviewer_name    text,
+  reviewed_at      timestamptz,
+  review_note      text,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+
+-- Only one pending-or-approved entry per date + session. Rejected entries
+-- free the slot so the session can be resubmitted.
+create unique index if not exists sessions_one_active_per_slot
+  on public.sessions (session_date, session_slot)
+  where approval_status in ('pending', 'approved');
+
+create index if not exists sessions_date_idx on public.sessions (session_date desc);
+create index if not exists sessions_status_idx on public.sessions (approval_status);
+create index if not exists sessions_submitter_idx on public.sessions (submitted_by);
+
+-- On insert: stamp the submitter, recalculate, and decide approval.
+create or replace function public.sessions_before_insert()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  me public.profiles;
+begin
+  select * into me from public.profiles where id = auth.uid() and active;
+  if me.id is null then
+    raise exception 'Your account is not active.';
+  end if;
+
+  new.submitted_by := me.id;
+  new.submitter_name := me.full_name;
+  new.start_values := public.clean_values(new.start_values);
+  new.end_values := public.clean_values(new.end_values);
+  new.result := public.calc_session(new.start_values, new.end_values);
+  new.calc_status := new.result ->> 'status';
+  new.created_at := now();
+  new.updated_at := now();
+
+  if me.role = 'admin' then
+    -- Admin submissions are approved by the admin themself; a note is kept.
+    new.approval_status := 'approved';
+    new.reviewed_by := me.id;
+    new.reviewer_name := me.full_name;
+    new.reviewed_at := now();
+  else
+    new.approval_status := case when new.calc_status = 'Match' then 'approved' else 'pending' end;
+    new.reviewed_by := null;
+    new.reviewer_name := null;
+    new.reviewed_at := null;
+    new.review_note := null;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists sessions_before_insert on public.sessions;
+create trigger sessions_before_insert
+  before insert on public.sessions
+  for each row execute function public.sessions_before_insert();
+
+-- On update (admin only, see policies): keep submitter fields fixed,
+-- recalculate, and stamp the reviewer when the approval status changes.
+create or replace function public.sessions_before_update()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  me public.profiles;
+begin
+  select * into me from public.profiles where id = auth.uid();
+
+  new.submitted_by := old.submitted_by;
+  new.submitter_name := old.submitter_name;
+  new.created_at := old.created_at;
+  new.start_values := public.clean_values(new.start_values);
+  new.end_values := public.clean_values(new.end_values);
+  new.result := public.calc_session(new.start_values, new.end_values);
+  new.calc_status := new.result ->> 'status';
+  new.updated_at := now();
+
+  if new.approval_status is distinct from old.approval_status then
+    new.reviewed_by := me.id;
+    new.reviewer_name := me.full_name;
+    new.reviewed_at := now();
+  else
+    new.reviewed_by := old.reviewed_by;
+    new.reviewer_name := old.reviewer_name;
+    new.reviewed_at := old.reviewed_at;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists sessions_before_update on public.sessions;
+create trigger sessions_before_update
+  before update on public.sessions
+  for each row execute function public.sessions_before_update();
+
+
+-- ---------------------------------------------------------------------
+-- Change log: every insert, edit, approval, rejection and delete.
+-- Only admins can read it; nobody can write to it except the trigger.
+-- ---------------------------------------------------------------------
+create table if not exists public.audit_log (
+  id               bigint generated always as identity primary key,
+  action           text not null,        -- insert | update | approve | reject | delete
+  session_id       bigint,               -- no FK so the log survives deletes
+  changed_by       uuid,
+  changed_by_name  text,
+  changed_at       timestamptz not null default now(),
+  old_data         jsonb,
+  new_data         jsonb
+);
+
+create or replace function public.sessions_audit()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  who_name text;
+  act text;
+begin
+  select full_name into who_name from public.profiles where id = auth.uid();
+
+  if tg_op = 'INSERT' then
+    insert into public.audit_log (action, session_id, changed_by, changed_by_name, new_data)
+    values ('insert', new.id, auth.uid(), who_name, to_jsonb(new));
+  elsif tg_op = 'UPDATE' then
+    act := case
+      when new.approval_status is distinct from old.approval_status and new.approval_status = 'approved' then 'approve'
+      when new.approval_status is distinct from old.approval_status and new.approval_status = 'rejected' then 'reject'
+      else 'update'
+    end;
+    insert into public.audit_log (action, session_id, changed_by, changed_by_name, old_data, new_data)
+    values (act, new.id, auth.uid(), who_name, to_jsonb(old), to_jsonb(new));
+  else
+    insert into public.audit_log (action, session_id, changed_by, changed_by_name, old_data)
+    values ('delete', old.id, auth.uid(), who_name, to_jsonb(old));
+  end if;
+
+  return null;
+end;
+$$;
+
+drop trigger if exists sessions_audit on public.sessions;
+create trigger sessions_audit
+  after insert or update or delete on public.sessions
+  for each row execute function public.sessions_audit();
+
+
+-- ---------------------------------------------------------------------
+-- Access rules (row level security)
+-- ---------------------------------------------------------------------
+alter table public.profiles enable row level security;
+alter table public.sessions enable row level security;
+alter table public.audit_log enable row level security;
+
+-- Logged-out visitors get nothing.
+revoke all on public.profiles, public.sessions, public.audit_log from anon;
+-- Nobody writes to profiles or the log from the app.
+revoke insert, update, delete on public.profiles, public.audit_log from authenticated;
+
+drop policy if exists "profiles: read own or admin" on public.profiles;
+create policy "profiles: read own or admin" on public.profiles
+  for select to authenticated
+  using (id = auth.uid() or public.is_admin());
+
+-- Everyone active sees approved history; submitters see their own
+-- pending/rejected entries; the admin sees everything.
+drop policy if exists "sessions: read" on public.sessions;
+create policy "sessions: read" on public.sessions
+  for select to authenticated
+  using (
+    public.is_admin()
+    or submitted_by = auth.uid()
+    or (approval_status = 'approved' and public.is_active_user())
+  );
+
+drop policy if exists "sessions: submit" on public.sessions;
+create policy "sessions: submit" on public.sessions
+  for insert to authenticated
+  with check (public.is_active_user() and submitted_by = auth.uid());
+
+drop policy if exists "sessions: admin update" on public.sessions;
+create policy "sessions: admin update" on public.sessions
+  for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+drop policy if exists "sessions: admin delete" on public.sessions;
+create policy "sessions: admin delete" on public.sessions
+  for delete to authenticated
+  using (public.is_admin());
+
+drop policy if exists "audit: admin read" on public.audit_log;
+create policy "audit: admin read" on public.audit_log
+  for select to authenticated
+  using (public.is_admin());
+
+
+-- ---------------------------------------------------------------------
+-- Owner tools — run these in the SQL Editor only. They are blocked from
+-- the app.
+--
+--   select public.set_user_profile('someone@example.com', 'Full Name', 'staff');
+--   select public.set_user_profile('you@example.com', 'Your Name', 'admin');
+--   select public.set_user_active('someone@example.com', false);  -- deactivate
+-- ---------------------------------------------------------------------
+create or replace function public.set_user_profile(p_email text, p_full_name text, p_role text default 'staff')
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  uid uuid;
+begin
+  select id into uid from auth.users where lower(email) = lower(p_email);
+  if uid is null then
+    raise exception 'No user with email %. Add them under Authentication → Users first.', p_email;
+  end if;
+
+  insert into public.profiles (id, full_name, role)
+  values (uid, p_full_name, p_role)
+  on conflict (id) do update set full_name = excluded.full_name, role = excluded.role;
+end;
+$$;
+
+create or replace function public.set_user_active(p_email text, p_active boolean)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.profiles
+  set active = p_active
+  where id = (select id from auth.users where lower(email) = lower(p_email));
+
+  if not found then
+    raise exception 'No profile for email %', p_email;
+  end if;
+end;
+$$;
+
+revoke execute on function public.set_user_profile(text, text, text) from public, anon, authenticated;
+revoke execute on function public.set_user_active(text, boolean) from public, anon, authenticated;
