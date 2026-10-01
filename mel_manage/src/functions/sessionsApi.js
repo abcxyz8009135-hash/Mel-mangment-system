@@ -7,14 +7,21 @@ const toNumbers = (values) => ({
   withdrawal: parseFloat(values.withdrawal) || 0,
 });
 
+// Every session query also pulls in its SIM's name and number.
+const COLUMNS = '*, sim:sims(id, name, phone)';
+
 const fromRow = (row) => ({
   id: row.id,
   date: row.session_date,
   session: row.session_slot,
+  simId: row.sim_id,
+  simName: row.sim?.name ?? null,
+  simPhone: row.sim?.phone ?? null,
   submittedBy: row.submitted_by,
   name: row.submitter_name,
   start: row.start_values,
   end: row.end_values,
+  complaints: row.complaints ?? [],
   result: row.result,
   approvalStatus: row.approval_status,
   reviewerName: row.reviewer_name,
@@ -41,18 +48,57 @@ export async function fetchSessions() {
   const rows = await run(
     supabase
       .from('sessions')
-      .select('*')
+      .select(COLUMNS)
       .order('session_date', { ascending: false })
       .order('session_slot', { ascending: true }),
   );
   return rows.map(fromRow);
 }
 
+export async function fetchSessionsForDate(date) {
+  const rows = await run(
+    supabase
+      .from('sessions')
+      .select(COLUMNS)
+      .eq('session_date', date)
+      .order('session_slot', { ascending: true }),
+  );
+  return rows.map(fromRow);
+}
+
+// End values of the latest approved session before this date + slot, or
+// null if there is none. Used to prefill the next session's start point.
+export async function fetchPreviousEndValues(date, slot) {
+  const sameDay = await run(
+    supabase
+      .from('sessions')
+      .select('end_values')
+      .eq('approval_status', 'approved')
+      .eq('session_date', date)
+      .lt('session_slot', slot)
+      .order('session_slot', { ascending: false })
+      .limit(1),
+  );
+  if (sameDay.length) return sameDay[0].end_values;
+
+  const earlier = await run(
+    supabase
+      .from('sessions')
+      .select('end_values')
+      .eq('approval_status', 'approved')
+      .lt('session_date', date)
+      .order('session_date', { ascending: false })
+      .order('session_slot', { ascending: false })
+      .limit(1),
+  );
+  return earlier.length ? earlier[0].end_values : null;
+}
+
 export async function fetchPendingSessions() {
   const rows = await run(
     supabase
       .from('sessions')
-      .select('*')
+      .select(COLUMNS)
       .eq('approval_status', 'pending')
       .order('created_at', { ascending: true }),
   );
@@ -70,35 +116,39 @@ export async function fetchPendingCount() {
 
 // The database fills in the submitter, recalculates the result and decides
 // the approval status itself, so none of those are sent from here.
-export async function submitSession({ date, session, start, end, note }) {
+export async function submitSession({ date, session, simId, start, end, complaints, note }) {
   const row = await run(
     supabase
       .from('sessions')
       .insert({
         session_date: date,
         session_slot: session,
+        sim_id: simId || null,
         start_values: toNumbers(start),
         end_values: toNumbers(end),
+        complaints: complaints ?? [],
         review_note: note ?? null,
       })
-      .select()
+      .select(COLUMNS)
       .single(),
   );
   return fromRow(row);
 }
 
-export async function updateSession(id, { date, session, start, end }) {
+export async function updateSession(id, { date, session, simId, start, end, complaints }) {
   const row = await run(
     supabase
       .from('sessions')
       .update({
         session_date: date,
         session_slot: session,
+        sim_id: simId || null,
         start_values: toNumbers(start),
         end_values: toNumbers(end),
+        complaints: complaints ?? [],
       })
       .eq('id', id)
-      .select()
+      .select(COLUMNS)
       .single(),
   );
   return fromRow(row);
@@ -110,7 +160,7 @@ export async function reviewSession(id, approvalStatus, note) {
       .from('sessions')
       .update({ approval_status: approvalStatus, review_note: note || null })
       .eq('id', id)
-      .select()
+      .select(COLUMNS)
       .single(),
   );
   return fromRow(row);

@@ -90,7 +90,44 @@ as $$
   );
 $$;
 
-create or replace function public.calc_session(s jsonb, e jsonb)
+-- Complaints: a list of positive amounts. Anything else is rejected.
+create or replace function public.clean_complaints(v jsonb)
+returns jsonb
+language plpgsql
+immutable
+as $$
+declare
+  item jsonb;
+  n numeric;
+  cleaned jsonb := '[]'::jsonb;
+begin
+  if v is null or jsonb_typeof(v) = 'null' then
+    return cleaned;
+  end if;
+  if jsonb_typeof(v) <> 'array' then
+    raise exception 'Complaints must be a list of amounts.';
+  end if;
+
+  for item in select value from jsonb_array_elements(v) loop
+    begin
+      n := (item #>> '{}')::numeric;
+    exception when others then
+      raise exception 'Complaint amounts must be numbers.';
+    end;
+    if n is null or n <= 0 then
+      raise exception 'Complaint amounts must be positive numbers.';
+    end if;
+    cleaned := cleaned || to_jsonb(n);
+  end loop;
+
+  return cleaned;
+end;
+$$;
+
+-- The two-argument version from before complaints existed.
+drop function if exists public.calc_session(jsonb, jsonb);
+
+create or replace function public.calc_session(s jsonb, e jsonb, c jsonb default '[]'::jsonb)
 returns jsonb
 language plpgsql
 immutable
@@ -122,6 +159,13 @@ declare
   expected_tele numeric;
   expected_reddy numeric;
   warnings text[] := '{}';
+
+  complaint_list jsonb := coalesce(c, '[]'::jsonb);
+  complaint_count integer := jsonb_array_length(coalesce(c, '[]'::jsonb));
+  complaints_total numeric := coalesce(
+    (select sum((x #>> '{}')::numeric) from jsonb_array_elements(coalesce(c, '[]'::jsonb)) as x), 0);
+  adjusted_diff numeric;
+  adjusted_status text;
 begin
   start_total := s_tele + s_reddy;
   end_total := e_tele + e_reddy;
@@ -137,6 +181,14 @@ begin
   status := case
     when diff > match_tolerance then 'Over'
     when diff < -match_tolerance then 'Short'
+    else 'Match'
+  end;
+
+  -- Complaints worked in the session are added to the difference.
+  adjusted_diff := diff + complaints_total;
+  adjusted_status := case
+    when adjusted_diff > match_tolerance then 'Over'
+    when adjusted_diff < -match_tolerance then 'Short'
     else 'Match'
   end;
 
@@ -161,6 +213,11 @@ begin
     'totalCommission', total_comm,
     'difference', diff,
     'status', status,
+    'complaints', complaint_list,
+    'complaintCount', complaint_count,
+    'complaintsTotal', complaints_total,
+    'adjustedDifference', adjusted_diff,
+    'adjustedStatus', adjusted_status,
     'expectedTele', expected_tele,
     'expectedReddy', expected_reddy,
     'actualTele', e_tele,
@@ -174,16 +231,37 @@ $$;
 
 
 -- ---------------------------------------------------------------------
+-- SIMs / phones. Managed by the admin from the app's SIMs page.
+-- Deactivate instead of deleting so old sessions keep pointing to them.
+-- ---------------------------------------------------------------------
+create table if not exists public.sims (
+  id          bigint generated always as identity primary key,
+  name        text not null,
+  phone       text not null default '',
+  active      boolean not null default true,
+  created_at  timestamptz not null default now()
+);
+
+-- Dummy SIMs for a fresh install; rename them on the SIMs page.
+insert into public.sims (name, phone)
+select v.name, v.phone
+from (values ('Phone A', '0911 000 001'), ('Phone B', '0911 000 002'), ('Phone C', '0911 000 003')) as v (name, phone)
+where not exists (select 1 from public.sims);
+
+
+-- ---------------------------------------------------------------------
 -- Sessions
 -- ---------------------------------------------------------------------
 create table if not exists public.sessions (
   id               bigint generated always as identity primary key,
   session_date     date not null,
-  session_slot     text not null check (session_slot in ('Session 1', 'Session 2', 'Session 3')),
+  session_slot     text not null check (session_slot in ('Session 1', 'Session 2', 'Session 3', 'Session 4')),
+  sim_id           bigint references public.sims (id) on delete restrict,
   submitted_by     uuid not null references public.profiles (id) on delete restrict,
   submitter_name   text not null,          -- copy of the name at submission time
   start_values     jsonb not null,
   end_values       jsonb not null,
+  complaints       jsonb not null default '[]'::jsonb,
   result           jsonb not null,
   calc_status      text not null check (calc_status in ('Match', 'Over', 'Short')),
   approval_status  text not null check (approval_status in ('pending', 'approved', 'rejected')),
@@ -194,6 +272,17 @@ create table if not exists public.sessions (
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now()
 );
+
+-- Upgrades for projects created before SIMs and Session 4 existed.
+-- Old sessions keep an empty SIM.
+alter table public.sessions add column if not exists sim_id bigint references public.sims (id) on delete restrict;
+alter table public.sessions drop constraint if exists sessions_session_slot_check;
+alter table public.sessions add constraint sessions_session_slot_check
+  check (session_slot in ('Session 1', 'Session 2', 'Session 3', 'Session 4'));
+
+alter table public.sessions add column if not exists complaints jsonb not null default '[]'::jsonb;
+
+create index if not exists sessions_sim_idx on public.sessions (sim_id);
 
 -- Only one pending-or-approved entry per date + session. Rejected entries
 -- free the slot so the session can be resubmitted.
@@ -220,12 +309,24 @@ begin
     raise exception 'Your account is not active.';
   end if;
 
+  -- Staff must pick an active SIM. The admin may leave it empty so old
+  -- browser data (which has no SIM) can be imported.
+  if new.sim_id is null then
+    if me.role <> 'admin' then
+      raise exception 'Choose a SIM.';
+    end if;
+  elsif not exists (select 1 from public.sims where id = new.sim_id and active) then
+    raise exception 'That SIM is not active.';
+  end if;
+
   new.submitted_by := me.id;
   new.submitter_name := me.full_name;
   new.start_values := public.clean_values(new.start_values);
   new.end_values := public.clean_values(new.end_values);
-  new.result := public.calc_session(new.start_values, new.end_values);
-  new.calc_status := new.result ->> 'status';
+  new.complaints := public.clean_complaints(new.complaints);
+  new.result := public.calc_session(new.start_values, new.end_values, new.complaints);
+  -- Status after complaints; this is what decides approval.
+  new.calc_status := new.result ->> 'adjustedStatus';
   new.created_at := now();
   new.updated_at := now();
 
@@ -265,13 +366,20 @@ declare
 begin
   select * into me from public.profiles where id = auth.uid();
 
+  if new.sim_id is distinct from old.sim_id and new.sim_id is not null
+     and not exists (select 1 from public.sims where id = new.sim_id and active) then
+    raise exception 'That SIM is not active.';
+  end if;
+
   new.submitted_by := old.submitted_by;
   new.submitter_name := old.submitter_name;
   new.created_at := old.created_at;
   new.start_values := public.clean_values(new.start_values);
   new.end_values := public.clean_values(new.end_values);
-  new.result := public.calc_session(new.start_values, new.end_values);
-  new.calc_status := new.result ->> 'status';
+  new.complaints := public.clean_complaints(new.complaints);
+  new.result := public.calc_session(new.start_values, new.end_values, new.complaints);
+  -- Status after complaints; this is what decides approval.
+  new.calc_status := new.result ->> 'adjustedStatus';
   new.updated_at := now();
 
   if new.approval_status is distinct from old.approval_status then
@@ -353,9 +461,12 @@ create trigger sessions_audit
 alter table public.profiles enable row level security;
 alter table public.sessions enable row level security;
 alter table public.audit_log enable row level security;
+alter table public.sims enable row level security;
 
 -- Logged-out visitors get nothing.
-revoke all on public.profiles, public.sessions, public.audit_log from anon;
+revoke all on public.profiles, public.sessions, public.audit_log, public.sims from anon;
+-- SIMs are deactivated, never deleted.
+revoke delete on public.sims from authenticated;
 -- Nobody writes to profiles or the log from the app.
 revoke insert, update, delete on public.profiles, public.audit_log from authenticated;
 
@@ -390,6 +501,24 @@ drop policy if exists "sessions: admin delete" on public.sessions;
 create policy "sessions: admin delete" on public.sessions
   for delete to authenticated
   using (public.is_admin());
+
+-- Everyone active can read all SIMs (inactive ones are still shown on
+-- old sessions); only the admin adds or edits them.
+drop policy if exists "sims: read" on public.sims;
+create policy "sims: read" on public.sims
+  for select to authenticated
+  using (public.is_active_user());
+
+drop policy if exists "sims: admin insert" on public.sims;
+create policy "sims: admin insert" on public.sims
+  for insert to authenticated
+  with check (public.is_admin());
+
+drop policy if exists "sims: admin update" on public.sims;
+create policy "sims: admin update" on public.sims
+  for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
 
 drop policy if exists "audit: admin read" on public.audit_log;
 create policy "audit: admin read" on public.audit_log

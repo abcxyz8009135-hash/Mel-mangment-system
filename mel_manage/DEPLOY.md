@@ -96,7 +96,13 @@ npm run dev
 | Who | Can |
 |---|---|
 | Staff | Submit sessions; see approved history and their own pending/rejected sessions |
-| Admin | Everything staff can, plus approve/reject, edit and delete any session |
+| Admin | Everything staff can, plus approve/reject, edit and delete any session, manage SIMs, and see the daily Summary |
+
+- Every new session must name the **SIM** it was worked on. The admin adds, renames and deactivates SIMs on the **SIMs** page; a fresh install starts with three dummy SIMs (Phone A/B/C) to rename. Sessions from before SIMs existed show "No SIM".
+- There are **4 sessions** per day.
+- The **Starting Point** fills in automatically from the end point of the latest *approved* earlier session (any SIM), or 0 if there is none. It refills when the date or session changes; the values can still be edited.
+- **Complaints** (optional) are entered as amounts separated by commas. Their total is added to the difference, and the status *after* complaints decides whether the session needs approval.
+- **Summary** (admin only) shows one day's totals, split by staff and by SIM. Only approved sessions are counted; pending ones are flagged above the totals.
 
 - A **Match** session (difference within ±150 birr) goes straight to history.
 - An **Over** or **Short** session waits on the **Approvals** page until the admin approves it.

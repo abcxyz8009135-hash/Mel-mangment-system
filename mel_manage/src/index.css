@@ -336,6 +336,51 @@ h1, h2, h3 { margin: 0; }
 .login-card p { margin: 0; }
 .login-card .field { margin-bottom: 0; }
 
+/* ---------- SIMs ---------- */
+.history-sim {
+  border: 1px solid var(--primary);
+  color: var(--primary);
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+}
+.sim-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+.sim-form .field { margin-bottom: 0; }
+.sim-form .btn { justify-self: start; }
+.sim-hint { margin: -6px 0 10px; }
+.sim-table input {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  width: 100%;
+  min-width: 120px;
+}
+.sim-table td { text-align: left; }
+.sim-table tr.inactive td:not(:last-child) { color: var(--muted); }
+.sim-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+.sim-table td.sim-actions { text-align: right; }
+
+/* ---------- Summary ---------- */
+.summary-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
+.tile { display: flex; flex-direction: column; gap: 6px; }
+.tile strong { font-size: 1.3rem; font-variant-numeric: tabular-nums; }
+.tile-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.table-scroll { overflow-x: auto; }
+
+.nav { flex-wrap: wrap; }
+
 @media (max-width: 480px) {
   .results-grid, .forms { grid-template-columns: 1fr; }
   .history-summary { gap: 8px 12px; }

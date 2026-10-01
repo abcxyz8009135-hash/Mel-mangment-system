@@ -7,7 +7,28 @@ export const MATCH_TOLERANCE = 150;
 
 const toNumber = (value) => parseFloat(value) || 0;
 
-export function calcSession(startValues, endValues) {
+const statusFor = (difference) => {
+  if (difference > MATCH_TOLERANCE) return 'Over';
+  if (difference < -MATCH_TOLERANCE) return 'Short';
+  return 'Match';
+};
+
+// "200, 150, 75" -> { values: [200, 150, 75] }. Blank entries are ignored;
+// anything that is not a positive number gives { error }.
+export function parseComplaints(text) {
+  const parts = (text || '').split(',').map((p) => p.trim()).filter(Boolean);
+  const values = [];
+  for (const part of parts) {
+    const n = Number(part);
+    if (!Number.isFinite(n) || n <= 0) {
+      return { values: [], error: `"${part}" is not a valid complaint amount. Use positive numbers separated by commas.` };
+    }
+    values.push(n);
+  }
+  return { values, error: null };
+}
+
+export function calcSession(startValues, endValues, complaints = []) {
   const start = {
     tele: toNumber(startValues.tele),
     reddy: toNumber(startValues.reddy),
@@ -35,9 +56,12 @@ export function calcSession(startValues, endValues) {
 
   // 3. Compare commission with session profit
   const difference = sessionProfit - totalCommission;
-  let status = 'Match';
-  if (difference > MATCH_TOLERANCE) status = 'Over';
-  else if (difference < -MATCH_TOLERANCE) status = 'Short';
+  const status = statusFor(difference);
+
+  // 3b. Complaints worked in the session are added to the difference
+  const complaintsTotal = complaints.reduce((sum, n) => sum + n, 0);
+  const adjustedDifference = difference + complaintsTotal;
+  const adjustedStatus = statusFor(adjustedDifference);
 
   // 4. Expected end balances
   const expectedTele = start.tele + (depositInSession - withdrawalInSession);
@@ -60,6 +84,11 @@ export function calcSession(startValues, endValues) {
     totalCommission,
     difference,
     status,
+    complaints,
+    complaintCount: complaints.length,
+    complaintsTotal,
+    adjustedDifference,
+    adjustedStatus,
     expectedTele,
     expectedReddy,
     actualTele: end.tele,

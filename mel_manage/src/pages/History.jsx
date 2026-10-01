@@ -25,6 +25,7 @@ function History({ onChanged }) {
   const [data, setData] = useState({ loading: true, entries: [], error: '' })
   const [filter, setFilter] = useState('All')
   const [nameFilter, setNameFilter] = useState('All')
+  const [simFilter, setSimFilter] = useState('All')
   const [openId, setOpenId] = useState(null)
   const [editingId, setEditingId] = useState(null)
   const [notice, setNotice] = useState(null)
@@ -49,8 +50,12 @@ function History({ onChanged }) {
   )
 
   const names = [...new Set(approved.map((e) => e.name))].sort((a, b) => a.localeCompare(b))
+  const simNames = [...new Set(approved.map((e) => e.simName).filter(Boolean))].sort((a, b) => a.localeCompare(b))
   const visible = approved.filter(
-    (e) => (filter === 'All' || e.session === filter) && (nameFilter === 'All' || e.name === nameFilter),
+    (e) =>
+      (filter === 'All' || e.session === filter) &&
+      (nameFilter === 'All' || e.name === nameFilter) &&
+      (simFilter === 'All' || e.simName === simFilter),
   )
   const groups = groupByDate(visible)
 
@@ -123,8 +128,16 @@ function History({ onChanged }) {
           <div className="card editor">
             <h3>Edit session</h3>
             <SessionForm
-              initial={{ date: entry.date, session: entry.session, start: entry.start, end: entry.end }}
+              initial={{
+                date: entry.date,
+                session: entry.session,
+                simId: entry.simId,
+                start: entry.start,
+                end: entry.end,
+                complaints: entry.complaints,
+              }}
               submitLabel="Save changes"
+              requireSim={false}
               onSubmit={handleEdit(entry)}
               onCancel={() => setEditingId(null)}
             />
@@ -155,6 +168,13 @@ function History({ onChanged }) {
             <select id="history-name-filter" value={nameFilter} onChange={(e) => setNameFilter(e.target.value)}>
               <option value="All">Everyone</option>
               {names.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="history-sim-filter">SIM</label>
+            <select id="history-sim-filter" value={simFilter} onChange={(e) => setSimFilter(e.target.value)}>
+              <option value="All">All SIMs</option>
+              {simNames.map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           </div>
         </div>

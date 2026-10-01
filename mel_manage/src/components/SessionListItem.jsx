@@ -7,15 +7,18 @@ const APPROVAL_LABELS = { pending: 'Waiting for approval', rejected: 'Rejected',
 // `children` is rendered under the details (action buttons, editors, ...).
 function SessionListItem({ entry, isOpen, onToggle, showApproval = false, children }) {
   const r = entry.result
+  // Sessions saved before complaints existed only have `status`.
+  const finalStatus = r.adjustedStatus ?? r.status
 
   return (
     <li className={`history-item ${isOpen ? 'open' : ''}`}>
       <button className="history-summary" onClick={onToggle}>
         <span className="history-session">{entry.session}</span>
         <span className="history-name">{entry.name}</span>
+        <span className="history-sim">{entry.simName || 'No SIM'}</span>
         <span className="history-stat">Profit {fmt(r.sessionProfit)}</span>
         <span className="history-stat">Commission {fmt(r.totalCommission)}</span>
-        <span className={`badge badge-${r.status.toLowerCase()}`}>{r.status}</span>
+        <span className={`badge badge-${finalStatus.toLowerCase()}`}>{finalStatus}</span>
         {showApproval && (
           <span className={`badge badge-${entry.approvalStatus}`}>{APPROVAL_LABELS[entry.approvalStatus]}</span>
         )}
@@ -43,6 +46,10 @@ function SessionListItem({ entry, isOpen, onToggle, showApproval = false, childr
 
           <div className="meta">
             <span>Submitted by <strong>{entry.name}</strong> on {new Date(entry.savedAt).toLocaleString()}</span>
+            <span>
+              SIM: <strong>{entry.simName || '—'}</strong>
+              {entry.simPhone && <> ({entry.simPhone})</>}
+            </span>
             {entry.reviewedAt && entry.approvalStatus !== 'pending' && (
               <span>
                 {entry.approvalStatus === 'rejected' ? 'Rejected' : 'Approved'} by{' '}

@@ -1,4 +1,4 @@
-export const SESSIONS = ['Session 1', 'Session 2', 'Session 3'];
+export const SESSIONS = ['Session 1', 'Session 2', 'Session 3', 'Session 4'];
 
 export const EMPTY_VALUES = { tele: '', reddy: '', deposit: '', withdrawal: '' };
 

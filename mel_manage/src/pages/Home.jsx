@@ -14,13 +14,14 @@ function Home({ onSubmitted }) {
     }
     return {
       type: 'warning',
-      text: `${saved.session} for ${saved.date} is ${saved.result.status}. It was sent to the admin for approval and will appear in history once approved.`,
+      text: `${saved.session} for ${saved.date} is ${saved.result.adjustedStatus ?? saved.result.status}. It was sent to the admin for approval and will appear in history once approved.`,
     }
   }
 
   return (
     <SessionForm
-      initial={{ date: todayString(), session: SESSIONS[0], start: EMPTY_VALUES, end: EMPTY_VALUES }}
+      initial={{ date: todayString(), session: SESSIONS[0], simId: '', start: EMPTY_VALUES, end: EMPTY_VALUES, complaints: [] }}
+      prefillStart
       submitLabel="Submit"
       onSubmit={handleSubmit}
       intro={<>Submitting as <strong>{profile.full_name}</strong></>}

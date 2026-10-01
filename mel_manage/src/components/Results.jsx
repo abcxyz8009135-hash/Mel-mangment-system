@@ -64,6 +64,30 @@ function Results({ result: r }) {
             </tbody>
           </table>
         </section>
+
+        {/* Sessions saved before complaints existed have no adjusted result. */}
+        {r.adjustedStatus && (
+          <section className="card">
+            <h3>5. After Complaints</h3>
+            <div className="row">
+              <span>Complaints worked</span>
+              <span>{r.complaintCount}</span>
+            </div>
+            {r.complaintCount > 0 && (
+              <div className="row sub"><span>Amounts</span><span>{r.complaints.map(fmt).join(', ')}</span></div>
+            )}
+            <div className="row"><span>Complaints total</span><span>{fmt(r.complaintsTotal)}</span></div>
+            <div className="row"><span>Difference</span><span className={signClass(r.difference)}>{fmt(r.difference)}</span></div>
+            <div className="row total">
+              <span>Difference + complaints</span>
+              <span className={signClass(r.adjustedDifference)}>{fmt(r.adjustedDifference)}</span>
+            </div>
+            <div className="status">
+              <span className={`badge badge-${r.adjustedStatus.toLowerCase()}`}>{r.adjustedStatus}</span>
+              <span className="muted">final status · tolerance ±{MATCH_TOLERANCE} birr</span>
+            </div>
+          </section>
+        )}
       </div>
     </div>
   )
