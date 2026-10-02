@@ -1,7 +1,7 @@
 import SessionForm from '../components/SessionForm'
 import { useAuth } from '../auth/AuthContext'
 import { submitSession } from '../functions/sessionsApi'
-import { SESSIONS, EMPTY_VALUES, todayString } from '../functions/sessionOptions'
+import { SESSIONS, EMPTY_VALUES, todayString, nowTimeString } from '../functions/sessionOptions'
 
 function Home({ onSubmitted }) {
   const { profile } = useAuth()
@@ -20,7 +20,7 @@ function Home({ onSubmitted }) {
 
   return (
     <SessionForm
-      initial={{ date: todayString(), session: SESSIONS[0], simId: '', start: EMPTY_VALUES, end: EMPTY_VALUES, complaints: [] }}
+      initial={{ date: todayString(), time: nowTimeString(), session: SESSIONS[0], simId: '', start: EMPTY_VALUES, end: EMPTY_VALUES, complaints: [] }}
       prefillStart
       submitLabel="Submit"
       onSubmit={handleSubmit}

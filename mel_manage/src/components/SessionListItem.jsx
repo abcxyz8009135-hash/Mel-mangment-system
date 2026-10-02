@@ -13,7 +13,10 @@ function SessionListItem({ entry, isOpen, onToggle, showApproval = false, childr
   return (
     <li className={`history-item ${isOpen ? 'open' : ''}`}>
       <button className="history-summary" onClick={onToggle}>
-        <span className="history-session">{entry.session}</span>
+        <span className="history-session">
+          {entry.session}
+          {entry.time && <span className="muted"> · {entry.time}</span>}
+        </span>
         <span className="history-name">{entry.name}</span>
         <span className="history-sim">{entry.simName || 'No SIM'}</span>
         <span className="history-stat">Profit {fmt(r.sessionProfit)}</span>
@@ -56,7 +59,9 @@ function SessionListItem({ entry, isOpen, onToggle, showApproval = false, childr
                 <strong>{entry.reviewerName}</strong> on {new Date(entry.reviewedAt).toLocaleString()}
               </span>
             )}
-            {entry.reviewNote && <span>Note: {entry.reviewNote}</span>}
+            {entry.time && <span>Session time: <strong>{entry.time}</strong></span>}
+            {entry.note && <span>Note from {entry.name}: {entry.note}</span>}
+            {entry.reviewNote && <span>Review note: {entry.reviewNote}</span>}
           </div>
 
           {children}

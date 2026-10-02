@@ -131,10 +131,12 @@ function History({ onChanged }) {
               initial={{
                 date: entry.date,
                 session: entry.session,
+                time: entry.time,
                 simId: entry.simId,
                 start: entry.start,
                 end: entry.end,
                 complaints: entry.complaints,
+                note: entry.note,
               }}
               submitLabel="Save changes"
               requireSim={false}

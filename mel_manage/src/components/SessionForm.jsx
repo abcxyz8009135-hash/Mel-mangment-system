@@ -6,18 +6,22 @@ import { SESSIONS, EMPTY_VALUES } from '../functions/sessionOptions'
 import { fetchPreviousEndValues } from '../functions/sessionsApi'
 import { fetchSims, simLabel } from '../functions/simsApi'
 
-// Date + session + SIM picker, start/end forms, complaints, preview and submit.
+// Date + time + session + SIM picker, start/end forms, complaints, optional
+// note, preview and submit.
 // onSubmit(values) must return { type, text } or throw an Error.
 // With prefillStart, the start point is filled from the previous approved
 // session's end point (or 0) whenever the date or session changes.
 function SessionForm({ initial, submitLabel, onSubmit, onCancel, intro, requireSim = true, prefillStart = false }) {
   const [date, setDate] = useState(initial.date)
   const [session, setSession] = useState(initial.session)
+  const [time, setTime] = useState(initial.time ?? '')
   const [simId, setSimId] = useState(initial.simId ? String(initial.simId) : '')
   const [sims, setSims] = useState([])
   const [start, setStart] = useState(initial.start)
   const [end, setEnd] = useState(initial.end)
   const [complaintsText, setComplaintsText] = useState((initial.complaints ?? []).join(', '))
+  const [note, setNote] = useState(initial.note ?? '')
+  const [showNote, setShowNote] = useState(Boolean(initial.note))
   const [prefilled, setPrefilled] = useState(null)
   const [result, setResult] = useState(null)
   const [submitted, setSubmitted] = useState(false)
@@ -92,10 +96,12 @@ function SessionForm({ initial, submitLabel, onSubmit, onCancel, intro, requireS
         await onSubmit({
           date,
           session,
+          time,
           simId: simId ? Number(simId) : null,
           start,
           end,
           complaints: result.complaints,
+          note: showNote ? note.trim() : '',
         }),
       )
       setSubmitted(true)
@@ -110,6 +116,8 @@ function SessionForm({ initial, submitLabel, onSubmit, onCancel, intro, requireS
     setStart(prefilled ?? initial.start)
     setEnd(initial.end)
     setComplaintsText((initial.complaints ?? []).join(', '))
+    setNote(initial.note ?? '')
+    setShowNote(Boolean(initial.note))
     setResult(null)
     setSubmitted(false)
     setMessage(null)
@@ -126,6 +134,18 @@ function SessionForm({ initial, submitLabel, onSubmit, onCancel, intro, requireS
             value={date}
             onChange={(e) => {
               setDate(e.target.value)
+              changed()
+            }}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="session-time">Time</label>
+          <input
+            type="time"
+            id="session-time"
+            value={time}
+            onChange={(e) => {
+              setTime(e.target.value)
               changed()
             }}
           />
@@ -184,6 +204,38 @@ function SessionForm({ initial, submitLabel, onSubmit, onCancel, intro, requireS
           />
           <span className="muted">Separate amounts with commas. Their total is added to the difference.</span>
         </div>
+      </div>
+
+      <div className="card">
+        {showNote ? (
+          <div className="field">
+            <label htmlFor="session-note">Note (optional)</label>
+            <textarea
+              id="session-note"
+              rows={3}
+              value={note}
+              onChange={(e) => {
+                setNote(e.target.value)
+                setSubmitted(false)
+              }}
+            />
+            <button
+              type="button"
+              className="btn btn-ghost note-toggle"
+              onClick={() => {
+                setNote('')
+                setShowNote(false)
+                setSubmitted(false)
+              }}
+            >
+              Remove note
+            </button>
+          </div>
+        ) : (
+          <button type="button" className="btn btn-ghost note-toggle" onClick={() => setShowNote(true)}>
+            + Add note
+          </button>
+        )}
       </div>
 
       <div className="actions">

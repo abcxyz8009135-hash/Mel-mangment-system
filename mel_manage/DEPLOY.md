@@ -102,7 +102,9 @@ npm run dev
 - There are **4 sessions** per day.
 - The **Starting Point** fills in automatically from the end point of the latest *approved* earlier session (any SIM), or 0 if there is none. It refills when the date or session changes; the values can still be edited.
 - **Complaints** (optional) are entered as amounts separated by commas. Their total is added to the difference, and the status *after* complaints decides whether the session needs approval.
-- **Summary** (admin only) shows one day's totals, split by staff and by SIM. Only approved sessions are counted; pending ones are flagged above the totals.
+- **Summary** (admin only) shows totals for a date range (From / To, both default to today), split by staff and by SIM, plus by day when the range covers more than one day. Only approved sessions are counted; pending ones are flagged above the totals.
+- Each session records a **Time**, which defaults to the current time and can be changed.
+- **Notes** (optional): click **+ Add note** on the form to add one. The note is shown with the session in History and Approvals.
 
 - A **Match** session (difference within ±150 birr) goes straight to history.
 - An **Over** or **Short** session waits on the **Approvals** page until the admin approves it.

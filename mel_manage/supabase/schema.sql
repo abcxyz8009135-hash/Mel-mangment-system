@@ -256,12 +256,14 @@ create table if not exists public.sessions (
   id               bigint generated always as identity primary key,
   session_date     date not null,
   session_slot     text not null check (session_slot in ('Session 1', 'Session 2', 'Session 3', 'Session 4')),
+  session_time     time,                   -- time of day entered by the submitter
   sim_id           bigint references public.sims (id) on delete restrict,
   submitted_by     uuid not null references public.profiles (id) on delete restrict,
   submitter_name   text not null,          -- copy of the name at submission time
   start_values     jsonb not null,
   end_values       jsonb not null,
   complaints       jsonb not null default '[]'::jsonb,
+  note             text,                   -- submitter's optional note
   result           jsonb not null,
   calc_status      text not null check (calc_status in ('Match', 'Over', 'Short')),
   approval_status  text not null check (approval_status in ('pending', 'approved', 'rejected')),
@@ -281,6 +283,11 @@ alter table public.sessions add constraint sessions_session_slot_check
   check (session_slot in ('Session 1', 'Session 2', 'Session 3', 'Session 4'));
 
 alter table public.sessions add column if not exists complaints jsonb not null default '[]'::jsonb;
+
+-- Upgrades for projects created before session time and notes existed.
+-- Old sessions keep an empty time and note.
+alter table public.sessions add column if not exists session_time time;
+alter table public.sessions add column if not exists note text;
 
 create index if not exists sessions_sim_idx on public.sessions (sim_id);
 
@@ -324,6 +331,7 @@ begin
   new.start_values := public.clean_values(new.start_values);
   new.end_values := public.clean_values(new.end_values);
   new.complaints := public.clean_complaints(new.complaints);
+  new.note := nullif(btrim(new.note), '');
   new.result := public.calc_session(new.start_values, new.end_values, new.complaints);
   -- Status after complaints; this is what decides approval.
   new.calc_status := new.result ->> 'adjustedStatus';
@@ -377,6 +385,7 @@ begin
   new.start_values := public.clean_values(new.start_values);
   new.end_values := public.clean_values(new.end_values);
   new.complaints := public.clean_complaints(new.complaints);
+  new.note := nullif(btrim(new.note), '');
   new.result := public.calc_session(new.start_values, new.end_values, new.complaints);
   -- Status after complaints; this is what decides approval.
   new.calc_status := new.result ->> 'adjustedStatus';

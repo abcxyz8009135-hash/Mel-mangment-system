@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { fetchSessionsForDate } from '../functions/sessionsApi'
+import { fetchSessionsInRange } from '../functions/sessionsApi'
 import { fmt, todayString } from '../functions/sessionOptions'
 
 const signClass = (n) => (n > 0 ? 'positive' : n < 0 ? 'negative' : '')
@@ -18,7 +18,7 @@ function totals(entries) {
   return t
 }
 
-function breakdown(entries, keyOf) {
+function breakdown(entries, keyOf, sort = (a, b) => a.localeCompare(b)) {
   const groups = {}
   entries.forEach((e) => {
     const key = keyOf(e)
@@ -26,7 +26,7 @@ function breakdown(entries, keyOf) {
     groups[key].push(e)
   })
   return Object.keys(groups)
-    .sort((a, b) => a.localeCompare(b))
+    .sort(sort)
     .map((key) => ({ key, ...totals(groups[key]) }))
 }
 
@@ -64,51 +64,74 @@ function BreakdownTable({ title, label, rows }) {
 }
 
 function Summary() {
-  const [date, setDate] = useState(todayString)
+  const [from, setFrom] = useState(todayString)
+  const [to, setTo] = useState(todayString)
   const [data, setData] = useState({ loading: true, entries: [], error: '' })
+  const invalidRange = !from || !to || from > to
 
   useEffect(() => {
+    if (invalidRange) return
     let cancelled = false
-    fetchSessionsForDate(date)
+    fetchSessionsInRange(from, to)
       .then((entries) => !cancelled && setData({ loading: false, entries, error: '' }))
       .catch((err) => !cancelled && setData({ loading: false, entries: [], error: err.message }))
     return () => {
       cancelled = true
     }
-  }, [date])
+  }, [from, to, invalidRange])
 
-  const changeDate = (value) => {
-    setDate(value)
+  const changeRange = (setter) => (value) => {
+    setter(value)
     setData((prev) => ({ ...prev, loading: true }))
   }
+
+  const resetToToday = () => {
+    const today = todayString()
+    if (from === today && to === today) return
+    setFrom(today)
+    setTo(today)
+    setData((prev) => ({ ...prev, loading: true }))
+  }
+
+  const singleDay = from === to
+  const rangeText = singleDay ? 'on this day' : 'in this range'
 
   // Totals count approved sessions only; pending ones are flagged separately.
   const approved = data.entries.filter((e) => e.approvalStatus === 'approved')
   const pendingCount = data.entries.filter((e) => e.approvalStatus === 'pending').length
   const day = totals(approved)
+  const ready = !invalidRange && !data.loading
 
   return (
     <div className="page">
       <div className="card history-toolbar">
-        <h2>Daily Summary</h2>
-        <div className="field">
-          <label htmlFor="summary-date">Date</label>
-          <input type="date" id="summary-date" value={date} onChange={(e) => changeDate(e.target.value)} />
+        <h2>Summary</h2>
+        <div className="history-filters">
+          <div className="field">
+            <label htmlFor="summary-from">From</label>
+            <input type="date" id="summary-from" value={from} onChange={(e) => changeRange(setFrom)(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="summary-to">To</label>
+            <input type="date" id="summary-to" value={to} onChange={(e) => changeRange(setTo)(e.target.value)} />
+          </div>
+          <button className="btn btn-ghost" onClick={resetToToday}>Today</button>
         </div>
       </div>
 
-      {data.error && <p className="notice error">{data.error}</p>}
-      {pendingCount > 0 && (
+      {invalidRange && <p className="notice error">Choose a From date that is on or before the To date.</p>}
+      {!invalidRange && data.error && <p className="notice error">{data.error}</p>}
+      {ready && pendingCount > 0 && (
         <p className="notice warning">
-          {pendingCount} session(s) on this day are still waiting for approval and are not counted below.
+          {pendingCount} session(s) {rangeText} are still waiting for approval and are not counted below.
         </p>
       )}
-      {data.loading && <div className="card empty">Loading…</div>}
-      {!data.loading && !data.error && approved.length === 0 && (
-        <div className="card empty">No approved sessions on this day.</div>
+      {!invalidRange && data.loading && <div className="card empty">Loading…</div>}
+      {ready && !data.error && approved.length === 0 && (
+        <div className="card empty">No approved sessions {rangeText}.</div>
       )}
 
-      {!data.loading && approved.length > 0 && (
+      {ready && approved.length > 0 && (
         <>
           <div className="summary-tiles">
             <div className="card tile"><span className="muted">Sessions</span><strong>{day.count}</strong></div>
@@ -132,6 +155,13 @@ function Summary() {
             </div>
           </div>
 
+          {!singleDay && (
+            <BreakdownTable
+              title="By day"
+              label="Date"
+              rows={breakdown(approved, (e) => e.date, (a, b) => b.localeCompare(a))}
+            />
+          )}
           <BreakdownTable title="By staff" label="Staff" rows={breakdown(approved, (e) => e.name)} />
           <BreakdownTable title="By SIM" label="SIM" rows={breakdown(approved, (e) => e.simName || 'No SIM')} />
         </>

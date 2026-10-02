@@ -385,3 +385,5 @@ h1, h2, h3 { margin: 0; }
   .results-grid, .forms { grid-template-columns: 1fr; }
   .history-summary { gap: 8px 12px; }
 }
+
+.note-toggle { align-self: flex-start; padding-left: 0; padding-right: 0; }

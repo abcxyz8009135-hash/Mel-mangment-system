@@ -14,6 +14,8 @@ const fromRow = (row) => ({
   id: row.id,
   date: row.session_date,
   session: row.session_slot,
+  // Postgres returns "HH:MM:SS"; the form and lists use "HH:MM".
+  time: row.session_time ? row.session_time.slice(0, 5) : null,
   simId: row.sim_id,
   simName: row.sim?.name ?? null,
   simPhone: row.sim?.phone ?? null,
@@ -22,6 +24,7 @@ const fromRow = (row) => ({
   start: row.start_values,
   end: row.end_values,
   complaints: row.complaints ?? [],
+  note: row.note ?? null,
   result: row.result,
   approvalStatus: row.approval_status,
   reviewerName: row.reviewer_name,
@@ -55,12 +58,15 @@ export async function fetchSessions() {
   return rows.map(fromRow);
 }
 
-export async function fetchSessionsForDate(date) {
+// Sessions from `from` to `to`, both dates included.
+export async function fetchSessionsInRange(from, to) {
   const rows = await run(
     supabase
       .from('sessions')
       .select(COLUMNS)
-      .eq('session_date', date)
+      .gte('session_date', from)
+      .lte('session_date', to)
+      .order('session_date', { ascending: true })
       .order('session_slot', { ascending: true }),
   );
   return rows.map(fromRow);
@@ -116,18 +122,19 @@ export async function fetchPendingCount() {
 
 // The database fills in the submitter, recalculates the result and decides
 // the approval status itself, so none of those are sent from here.
-export async function submitSession({ date, session, simId, start, end, complaints, note }) {
+export async function submitSession({ date, session, time, simId, start, end, complaints, note }) {
   const row = await run(
     supabase
       .from('sessions')
       .insert({
         session_date: date,
         session_slot: session,
+        session_time: time || null,
         sim_id: simId || null,
         start_values: toNumbers(start),
         end_values: toNumbers(end),
         complaints: complaints ?? [],
-        review_note: note ?? null,
+        note: note || null,
       })
       .select(COLUMNS)
       .single(),
@@ -135,17 +142,19 @@ export async function submitSession({ date, session, simId, start, end, complain
   return fromRow(row);
 }
 
-export async function updateSession(id, { date, session, simId, start, end, complaints }) {
+export async function updateSession(id, { date, session, time, simId, start, end, complaints, note }) {
   const row = await run(
     supabase
       .from('sessions')
       .update({
         session_date: date,
         session_slot: session,
+        session_time: time || null,
         sim_id: simId || null,
         start_values: toNumbers(start),
         end_values: toNumbers(end),
         complaints: complaints ?? [],
+        note: note || null,
       })
       .eq('id', id)
       .select(COLUMNS)
