@@ -353,7 +353,8 @@ h1, h2, h3 { margin: 0; }
 .sim-form .field { margin-bottom: 0; }
 .sim-form .btn { justify-self: start; }
 .sim-hint { margin: -6px 0 10px; }
-.sim-table input {
+.sim-table input,
+.sim-table select {
   font: inherit;
   padding: 6px 8px;
   border: 1px solid var(--border);
@@ -391,6 +392,35 @@ h1, h2, h3 { margin: 0; }
 }
 .capital-table tr.capital-total td { border-top: 1px solid var(--border); font-weight: 600; }
 .capital-hint { margin: 10px 0 0; }
+
+/* ---------- Transfers ---------- */
+.transfer-form { display: flex; flex-direction: column; gap: 12px; }
+.transfer-form .field { margin-bottom: 0; }
+.transfer-form p { margin: 0; }
+.transfer-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+.transfer-party {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px 12px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.transfer-party legend { font-size: 0.85rem; color: var(--muted); padding: 0 4px; }
+.transfer-table td { text-align: left; vertical-align: top; }
+.transfer-table td:nth-child(4) { text-align: right; white-space: nowrap; }
+.transfer-table th:nth-child(4) { text-align: right; }
+.transfer-table th { text-align: left; }
+.transfer-table tr.editing td { background: var(--surface-2); }
+.transfer-note { color: var(--muted); font-size: 0.9rem; max-width: 220px; }
+.transfer-table td.sim-actions { text-align: right; }
+.transfer-table .btn-danger { margin-left: 0; }
 
 .nav { flex-wrap: wrap; }
 

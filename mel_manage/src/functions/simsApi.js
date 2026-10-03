@@ -17,9 +17,13 @@ export async function fetchSims() {
   );
 }
 
-export async function createSim({ name, phone }) {
+export async function createSim({ name, phone, assignedTo }) {
   return run(
-    supabase.from('sims').insert({ name: name.trim(), phone: phone.trim() }).select().single(),
+    supabase
+      .from('sims')
+      .insert({ name: name.trim(), phone: phone.trim(), assigned_to: assignedTo || null })
+      .select()
+      .single(),
   );
 }
 

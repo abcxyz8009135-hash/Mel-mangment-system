@@ -6,6 +6,7 @@ import History from './pages/History'
 import Approvals from './pages/Approvals'
 import Summary from './pages/Summary'
 import Sims from './pages/Sims'
+import Transfers from './pages/Transfers'
 import Login from './pages/Login'
 import { useAuth } from './auth/AuthContext'
 import { fetchPendingCount } from './functions/sessionsApi'
@@ -31,7 +32,7 @@ function App() {
   if (loading) return <div className="login-wrap"><p className="muted">Loading…</p></div>
   if (!profile) return <Login />
 
-  const pages = isAdmin ? ['Home', 'History', 'Approvals', 'Summary', 'SIMs'] : ['Home', 'History']
+  const pages = isAdmin ? ['Home', 'History', 'Approvals', 'Summary', 'Transfers', 'SIMs'] : ['Home', 'History']
   const current = pages.includes(page) ? page : 'Home'
 
   const navigate = (p) => {
@@ -47,6 +48,7 @@ function App() {
         {current === 'History' && <History onChanged={isAdmin ? refreshPending : undefined} />}
         {current === 'Approvals' && <Approvals onChanged={refreshPending} />}
         {current === 'Summary' && <Summary />}
+        {current === 'Transfers' && <Transfers />}
         {current === 'SIMs' && <Sims />}
       </main>
     </>

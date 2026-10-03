@@ -248,6 +248,11 @@ select v.name, v.phone
 from (values ('Phone A', '0911 000 001'), ('Phone B', '0911 000 002'), ('Phone C', '0911 000 003')) as v (name, phone)
 where not exists (select 1 from public.sims);
 
+-- The one user (staff or admin) a SIM is assigned to; empty = unassigned.
+-- Staff can only submit sessions on their own SIMs.
+alter table public.sims add column if not exists assigned_to uuid references public.profiles (id) on delete restrict;
+create index if not exists sims_assigned_idx on public.sims (assigned_to);
+
 
 -- ---------------------------------------------------------------------
 -- Sessions
@@ -316,14 +321,18 @@ begin
     raise exception 'Your account is not active.';
   end if;
 
-  -- Staff must pick an active SIM. The admin may leave it empty so old
-  -- browser data (which has no SIM) can be imported.
+  -- Staff must pick an active SIM assigned to them. The admin may use any
+  -- SIM, or leave it empty so old browser data (which has no SIM) can be
+  -- imported.
   if new.sim_id is null then
     if me.role <> 'admin' then
       raise exception 'Choose a SIM.';
     end if;
   elsif not exists (select 1 from public.sims where id = new.sim_id and active) then
     raise exception 'That SIM is not active.';
+  elsif me.role <> 'admin'
+        and not exists (select 1 from public.sims where id = new.sim_id and assigned_to = me.id) then
+    raise exception 'That SIM is not assigned to you.';
   end if;
 
   new.submitted_by := me.id;
@@ -465,15 +474,135 @@ create trigger sessions_audit
 
 
 -- ---------------------------------------------------------------------
+-- Money transfers (telebirr) between the owner, the admin and staff.
+-- Admin only. Stored for tracking; they do not affect any calculation.
+-- A person side names that person's SIM; the Owner side (user = null)
+-- has no SIM. From Owner = working capital in, to Owner = capital out.
+-- ---------------------------------------------------------------------
+create table if not exists public.transfers (
+  id               bigint generated always as identity primary key,
+  transfer_date    date not null,
+  transfer_time    time,
+  from_user        uuid references public.profiles (id) on delete restrict,  -- null = Owner
+  from_sim_id      bigint references public.sims (id) on delete restrict,
+  to_user          uuid references public.profiles (id) on delete restrict,  -- null = Owner
+  to_sim_id        bigint references public.sims (id) on delete restrict,
+  amount           numeric not null check (amount > 0),
+  kind             text generated always as (
+                     case
+                       when from_user is null then 'capital_in'
+                       when to_user is null then 'capital_out'
+                     end
+                   ) stored,
+  note             text,
+  created_by       uuid not null references public.profiles (id) on delete restrict,
+  created_by_name  text not null,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now(),
+  constraint transfers_parties_check check (
+    (from_user is null) = (from_sim_id is null)
+    and (to_user is null) = (to_sim_id is null)
+    and not (from_user is null and to_user is null)
+    and from_sim_id is distinct from to_sim_id
+  )
+);
+
+create index if not exists transfers_date_idx on public.transfers (transfer_date desc);
+
+-- Stamp who entered it and check each SIM belongs to its person. On an
+-- edit, a side that did not change is not re-checked, so a SIM that was
+-- since reassigned or deactivated stays valid on old transfers.
+create or replace function public.transfers_before_write()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  me public.profiles;
+  check_from boolean := true;
+  check_to boolean := true;
+begin
+  select * into me from public.profiles where id = auth.uid();
+
+  if tg_op = 'INSERT' then
+    new.created_by := me.id;
+    new.created_by_name := me.full_name;
+    new.created_at := now();
+  else
+    new.created_by := old.created_by;
+    new.created_by_name := old.created_by_name;
+    new.created_at := old.created_at;
+    check_from := new.from_user is distinct from old.from_user or new.from_sim_id is distinct from old.from_sim_id;
+    check_to := new.to_user is distinct from old.to_user or new.to_sim_id is distinct from old.to_sim_id;
+  end if;
+
+  if check_from and new.from_sim_id is not null
+     and not exists (select 1 from public.sims where id = new.from_sim_id and active and assigned_to = new.from_user) then
+    raise exception 'The From SIM must be an active SIM assigned to that person.';
+  end if;
+  if check_to and new.to_sim_id is not null
+     and not exists (select 1 from public.sims where id = new.to_sim_id and active and assigned_to = new.to_user) then
+    raise exception 'The To SIM must be an active SIM assigned to that person.';
+  end if;
+
+  new.note := nullif(btrim(new.note), '');
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists transfers_before_write on public.transfers;
+create trigger transfers_before_write
+  before insert or update on public.transfers
+  for each row execute function public.transfers_before_write();
+
+-- Transfers go in the same change log as sessions.
+alter table public.audit_log add column if not exists transfer_id bigint;  -- no FK, like session_id
+
+create or replace function public.transfers_audit()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  who_name text;
+begin
+  select full_name into who_name from public.profiles where id = auth.uid();
+
+  if tg_op = 'INSERT' then
+    insert into public.audit_log (action, transfer_id, changed_by, changed_by_name, new_data)
+    values ('insert', new.id, auth.uid(), who_name, to_jsonb(new));
+  elsif tg_op = 'UPDATE' then
+    insert into public.audit_log (action, transfer_id, changed_by, changed_by_name, old_data, new_data)
+    values ('update', new.id, auth.uid(), who_name, to_jsonb(old), to_jsonb(new));
+  else
+    insert into public.audit_log (action, transfer_id, changed_by, changed_by_name, old_data)
+    values ('delete', old.id, auth.uid(), who_name, to_jsonb(old));
+  end if;
+
+  return null;
+end;
+$$;
+
+drop trigger if exists transfers_audit on public.transfers;
+create trigger transfers_audit
+  after insert or update or delete on public.transfers
+  for each row execute function public.transfers_audit();
+
+
+-- ---------------------------------------------------------------------
 -- Access rules (row level security)
 -- ---------------------------------------------------------------------
 alter table public.profiles enable row level security;
 alter table public.sessions enable row level security;
 alter table public.audit_log enable row level security;
 alter table public.sims enable row level security;
+alter table public.transfers enable row level security;
 
 -- Logged-out visitors get nothing.
-revoke all on public.profiles, public.sessions, public.audit_log, public.sims from anon;
+revoke all on public.profiles, public.sessions, public.audit_log, public.sims, public.transfers from anon;
 -- SIMs are deactivated, never deleted.
 revoke delete on public.sims from authenticated;
 -- Nobody writes to profiles or the log from the app.
@@ -526,6 +655,13 @@ create policy "sims: admin insert" on public.sims
 drop policy if exists "sims: admin update" on public.sims;
 create policy "sims: admin update" on public.sims
   for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+-- Transfers are admin only: staff can neither see nor change them.
+drop policy if exists "transfers: admin all" on public.transfers;
+create policy "transfers: admin all" on public.transfers
+  for all to authenticated
   using (public.is_admin())
   with check (public.is_admin());
 

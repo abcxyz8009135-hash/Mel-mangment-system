@@ -1,10 +1,23 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchSims, createSim, updateSim } from '../functions/simsApi'
+import { fetchProfiles, profileLabel } from '../functions/profilesApi'
 
-const EMPTY_SIM = { name: '', phone: '' }
+const EMPTY_SIM = { name: '', phone: '', assignedTo: '' }
+
+// Active users, plus the current assignee if they have since been deactivated.
+function AssigneeSelect({ id, label, value, profiles, disabled, onChange }) {
+  const options = profiles.filter((p) => p.active || p.id === value)
+  return (
+    <select id={id} aria-label={label} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+      <option value="">— Unassigned —</option>
+      {options.map((p) => <option key={p.id} value={p.id}>{profileLabel(p)}</option>)}
+    </select>
+  )
+}
 
 function Sims() {
   const [data, setData] = useState({ loading: true, sims: [], error: '' })
+  const [profiles, setProfiles] = useState([])
   const [newSim, setNewSim] = useState(EMPTY_SIM)
   const [editingId, setEditingId] = useState(null)
   const [draft, setDraft] = useState(EMPTY_SIM)
@@ -21,6 +34,9 @@ function Sims() {
 
   useEffect(() => {
     reload()
+    fetchProfiles()
+      .then(setProfiles)
+      .catch((err) => setNotice({ type: 'error', text: `Could not load users: ${err.message}` }))
   }, [reload])
 
   const perform = async (action, successText) => {
@@ -55,6 +71,14 @@ function Sims() {
     if (await perform(() => updateSim(sim.id, fields), `${fields.name} saved.`)) setEditingId(null)
   }
 
+  const assign = (sim, userId) => {
+    const who = profiles.find((p) => p.id === userId)
+    return perform(
+      () => updateSim(sim.id, { assigned_to: userId || null }),
+      who ? `${sim.name} assigned to ${who.full_name}.` : `${sim.name} is now unassigned.`,
+    )
+  }
+
   const toggleActive = (sim) =>
     perform(
       () => updateSim(sim.id, { active: !sim.active }),
@@ -86,6 +110,15 @@ function Sims() {
               onChange={(e) => setNewSim((prev) => ({ ...prev, phone: e.target.value }))}
             />
           </div>
+          <div className="field">
+            <label htmlFor="sim-assigned">Assigned to</label>
+            <AssigneeSelect
+              id="sim-assigned"
+              value={newSim.assignedTo}
+              profiles={profiles}
+              onChange={(assignedTo) => setNewSim((prev) => ({ ...prev, assignedTo }))}
+            />
+          </div>
           <button className="btn btn-primary" type="submit" disabled={busy}>Add</button>
         </div>
       </form>
@@ -96,14 +129,15 @@ function Sims() {
       <div className="card">
         <h2>SIMs</h2>
         <p className="muted sim-hint">
-          Deactivated SIMs disappear from the session form but stay on sessions that already use them.
+          Staff only see the SIMs assigned to them on the session form. Deactivated SIMs disappear from the
+          session form but stay on sessions that already use them.
         </p>
         {data.loading && <p className="empty">Loading…</p>}
         {!data.loading && data.sims.length === 0 && <p className="empty">No SIMs yet.</p>}
         {data.sims.length > 0 && (
           <table className="table sim-table">
             <thead>
-              <tr><th>Name</th><th>Phone number</th><th>Status</th><th></th></tr>
+              <tr><th>Name</th><th>Phone number</th><th>Assigned to</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
               {data.sims.map((sim) =>
@@ -125,6 +159,7 @@ function Sims() {
                       />
                     </td>
                     <td></td>
+                    <td></td>
                     <td className="sim-actions">
                       <button className="btn btn-small btn-primary" disabled={busy} onClick={() => handleSave(sim)}>Save</button>
                       <button className="btn btn-small btn-ghost" onClick={() => setEditingId(null)}>Cancel</button>
@@ -134,6 +169,15 @@ function Sims() {
                   <tr key={sim.id} className={sim.active ? '' : 'inactive'}>
                     <td>{sim.name}</td>
                     <td>{sim.phone || '—'}</td>
+                    <td>
+                      <AssigneeSelect
+                        label={`${sim.name} assigned to`}
+                        value={sim.assigned_to ?? ''}
+                        profiles={profiles}
+                        disabled={busy}
+                        onChange={(userId) => assign(sim, userId)}
+                      />
+                    </td>
                     <td>
                       <span className={`badge ${sim.active ? 'badge-approved' : 'badge-rejected'}`}>
                         {sim.active ? 'Active' : 'Inactive'}
