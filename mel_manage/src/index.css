@@ -378,6 +378,19 @@ h1, h2, h3 { margin: 0; }
 .tile strong { font-size: 1.3rem; font-variant-numeric: tabular-nums; }
 .tile-badges { display: flex; gap: 6px; flex-wrap: wrap; }
 .table-scroll { overflow-x: auto; }
+.capital-table input {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  width: 100%;
+  min-width: 100px;
+  text-align: right;
+}
+.capital-table tr.capital-total td { border-top: 1px solid var(--border); font-weight: 600; }
+.capital-hint { margin: 10px 0 0; }
 
 .nav { flex-wrap: wrap; }
 

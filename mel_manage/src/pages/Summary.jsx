@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { fetchSessionsInRange } from '../functions/sessionsApi'
 import { fmt, todayString } from '../functions/sessionOptions'
+import { defaultCapital, capitalTotals } from '../functions/capital'
 
 const signClass = (n) => (n > 0 ? 'positive' : n < 0 ? 'negative' : '')
 
@@ -63,10 +64,67 @@ function BreakdownTable({ title, label, rows }) {
   )
 }
 
+// Starting vs current capital. Every value is editable; edits only affect
+// this calculation and are not saved.
+function CapitalTable({ rows, onChange }) {
+  const t = capitalTotals(rows)
+  return (
+    <section className="card">
+      <h3>Capital</h3>
+      <div className="table-scroll">
+        <table className="table capital-table">
+          <thead>
+            <tr><th></th><th>Starting</th><th>Current</th><th>Change</th></tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const change = (parseFloat(r.current) || 0) - (parseFloat(r.start) || 0)
+              return (
+                <tr key={r.key}>
+                  <td>{r.label}</td>
+                  <td>
+                    <input
+                      aria-label={`${r.label} starting`}
+                      inputMode="decimal"
+                      value={r.start}
+                      onChange={(e) => onChange(r.key, 'start', e.target.value)}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      aria-label={`${r.label} current`}
+                      inputMode="decimal"
+                      value={r.current}
+                      onChange={(e) => onChange(r.key, 'current', e.target.value)}
+                    />
+                  </td>
+                  <td className={signClass(change)}>{fmt(change)}</td>
+                </tr>
+              )
+            })}
+            <tr className="capital-total">
+              <td>Total</td>
+              <td>{fmt(t.start)}</td>
+              <td>{fmt(t.current)}</td>
+              <td className={signClass(t.net)}>{fmt(t.net)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p className="muted capital-hint">
+        Telebirr: each SIM&apos;s first and last session in the range. Reddy: the first and last session overall.
+        Edits are not saved.
+      </p>
+    </section>
+  )
+}
+
 function Summary() {
   const [from, setFrom] = useState(todayString)
   const [to, setTo] = useState(todayString)
   const [data, setData] = useState({ loading: true, entries: [], error: '' })
+  // null until the admin clicks "Calculate capital"; cleared when the range changes.
+  const [capital, setCapital] = useState(null)
   const invalidRange = !from || !to || from > to
 
   useEffect(() => {
@@ -83,6 +141,7 @@ function Summary() {
   const changeRange = (setter) => (value) => {
     setter(value)
     setData((prev) => ({ ...prev, loading: true }))
+    setCapital(null)
   }
 
   const resetToToday = () => {
@@ -91,7 +150,11 @@ function Summary() {
     setFrom(today)
     setTo(today)
     setData((prev) => ({ ...prev, loading: true }))
+    setCapital(null)
   }
+
+  const updateCapital = (key, field, value) =>
+    setCapital((prev) => prev.map((r) => (r.key === key ? { ...r, [field]: value } : r)))
 
   const singleDay = from === to
   const rangeText = singleDay ? 'on this day' : 'in this range'
@@ -154,6 +217,14 @@ function Summary() {
               </span>
             </div>
           </div>
+
+          <div className="actions">
+            <button className="btn btn-primary" onClick={() => setCapital(defaultCapital(approved))}>
+              {capital ? 'Recalculate capital' : 'Calculate capital'}
+            </button>
+            {capital && <button className="btn btn-ghost" onClick={() => setCapital(null)}>Hide</button>}
+          </div>
+          {capital && <CapitalTable rows={capital} onChange={updateCapital} />}
 
           {!singleDay && (
             <BreakdownTable
