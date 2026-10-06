@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
-import { fetchSessionsInRange } from '../functions/sessionsApi'
+import { useEffect, useRef, useState } from 'react'
+import { fetchSessionsInRange, fetchLatestEndValues } from '../functions/sessionsApi'
+import { fetchSims } from '../functions/simsApi'
+import { fetchTransfersInRange } from '../functions/transfersApi'
 import { fmt, todayString } from '../functions/sessionOptions'
-import { defaultCapital, capitalTotals } from '../functions/capital'
+import { capitalRows, capitalTotals } from '../functions/capital'
 
 const signClass = (n) => (n > 0 ? 'positive' : n < 0 ? 'negative' : '')
 
@@ -64,10 +66,11 @@ function BreakdownTable({ title, label, rows }) {
   )
 }
 
-// Starting vs current capital. Every value is editable; edits only affect
-// this calculation and are not saved.
-function CapitalTable({ rows, onChange }) {
+// Starting capital typed in by the admin vs the balances now. Starting
+// values are not saved.
+function CapitalTable({ rows, ownerIn, ownerOut, endsBeforeToday, onChange }) {
   const t = capitalTotals(rows)
+  const withoutOwner = t.net - (ownerIn - ownerOut)
   return (
     <section className="card">
       <h3>Capital</h3>
@@ -78,7 +81,7 @@ function CapitalTable({ rows, onChange }) {
           </thead>
           <tbody>
             {rows.map((r) => {
-              const change = (parseFloat(r.current) || 0) - (parseFloat(r.start) || 0)
+              const change = r.current - (parseFloat(r.start) || 0)
               return (
                 <tr key={r.key}>
                   <td>{r.label}</td>
@@ -86,18 +89,12 @@ function CapitalTable({ rows, onChange }) {
                     <input
                       aria-label={`${r.label} starting`}
                       inputMode="decimal"
+                      placeholder="0"
                       value={r.start}
-                      onChange={(e) => onChange(r.key, 'start', e.target.value)}
+                      onChange={(e) => onChange(r.key, e.target.value)}
                     />
                   </td>
-                  <td>
-                    <input
-                      aria-label={`${r.label} current`}
-                      inputMode="decimal"
-                      value={r.current}
-                      onChange={(e) => onChange(r.key, 'current', e.target.value)}
-                    />
-                  </td>
+                  <td>{fmt(r.current)}</td>
                   <td className={signClass(change)}>{fmt(change)}</td>
                 </tr>
               )
@@ -108,13 +105,29 @@ function CapitalTable({ rows, onChange }) {
               <td>{fmt(t.current)}</td>
               <td className={signClass(t.net)}>{fmt(t.net)}</td>
             </tr>
+            <tr>
+              <td colSpan={3}>Owner money in</td>
+              <td>{fmt(ownerIn)}</td>
+            </tr>
+            <tr>
+              <td colSpan={3}>Owner money out</td>
+              <td>{fmt(-ownerOut)}</td>
+            </tr>
+            <tr className="capital-total">
+              <td colSpan={3}>Change excluding owner money</td>
+              <td className={signClass(withoutOwner)}>{fmt(withoutOwner)}</td>
+            </tr>
           </tbody>
         </table>
       </div>
       <p className="muted capital-hint">
-        Telebirr: each SIM&apos;s first and last session in the range. Reddy: the first and last session overall.
-        Edits are not saved.
+        Starting: type in the capital at the start of the range (not saved). Current: each SIM&apos;s balance on
+        the SIMs page right now, and the Reddy of the latest approved session. Owner money: transfers from and to the
+        Owner in this range.
       </p>
+      {endsBeforeToday && (
+        <p className="notice warning">Current is the balance now, not at the end of the range.</p>
+      )}
     </section>
   )
 }
@@ -125,6 +138,12 @@ function Summary() {
   const [data, setData] = useState({ loading: true, entries: [], error: '' })
   // null until the admin clicks "Calculate capital"; cleared when the range changes.
   const [capital, setCapital] = useState(null)
+  // Typed-in starting values by row key. Kept when the range changes or the
+  // capital is recalculated.
+  const [starts, setStarts] = useState({})
+  const [capitalStatus, setCapitalStatus] = useState({ busy: false, error: '' })
+  // Bumped on every calculation and range change, so a late answer for an old range is dropped.
+  const capitalRequest = useRef(0)
   const invalidRange = !from || !to || from > to
 
   useEffect(() => {
@@ -138,10 +157,16 @@ function Summary() {
     }
   }, [from, to, invalidRange])
 
+  const clearCapital = () => {
+    capitalRequest.current += 1
+    setCapital(null)
+    setCapitalStatus({ busy: false, error: '' })
+  }
+
   const changeRange = (setter) => (value) => {
     setter(value)
     setData((prev) => ({ ...prev, loading: true }))
-    setCapital(null)
+    clearCapital()
   }
 
   const resetToToday = () => {
@@ -150,11 +175,10 @@ function Summary() {
     setFrom(today)
     setTo(today)
     setData((prev) => ({ ...prev, loading: true }))
-    setCapital(null)
+    clearCapital()
   }
 
-  const updateCapital = (key, field, value) =>
-    setCapital((prev) => prev.map((r) => (r.key === key ? { ...r, [field]: value } : r)))
+  const updateStart = (key, value) => setStarts((prev) => ({ ...prev, [key]: value }))
 
   const singleDay = from === to
   const rangeText = singleDay ? 'on this day' : 'in this range'
@@ -164,6 +188,24 @@ function Summary() {
   const pendingCount = data.entries.filter((e) => e.approvalStatus === 'pending').length
   const day = totals(approved)
   const ready = !invalidRange && !data.loading
+
+  const calculateCapital = async () => {
+    const request = ++capitalRequest.current
+    setCapitalStatus({ busy: true, error: '' })
+    try {
+      const [sims, latest, transfers] = await Promise.all([
+        fetchSims(),
+        fetchLatestEndValues(),
+        fetchTransfersInRange(from, to),
+      ])
+      if (request !== capitalRequest.current) return
+      const ownerTotal = (kind) => transfers.filter((t) => t.kind === kind).reduce((sum, t) => sum + t.amount, 0)
+      setCapital({ sims, reddy: latest?.reddy, ownerIn: ownerTotal('capital_in'), ownerOut: ownerTotal('capital_out') })
+      setCapitalStatus({ busy: false, error: '' })
+    } catch (err) {
+      if (request === capitalRequest.current) setCapitalStatus({ busy: false, error: err.message })
+    }
+  }
 
   return (
     <div className="page">
@@ -219,12 +261,21 @@ function Summary() {
           </div>
 
           <div className="actions">
-            <button className="btn btn-primary" onClick={() => setCapital(defaultCapital(approved))}>
-              {capital ? 'Recalculate capital' : 'Calculate capital'}
+            <button className="btn btn-primary" onClick={calculateCapital} disabled={capitalStatus.busy}>
+              {capitalStatus.busy ? 'Calculating…' : capital ? 'Recalculate capital' : 'Calculate capital'}
             </button>
-            {capital && <button className="btn btn-ghost" onClick={() => setCapital(null)}>Hide</button>}
+            {capital && <button className="btn btn-ghost" onClick={clearCapital}>Hide</button>}
           </div>
-          {capital && <CapitalTable rows={capital} onChange={updateCapital} />}
+          {capitalStatus.error && <p className="notice error">{capitalStatus.error}</p>}
+          {capital && (
+            <CapitalTable
+              rows={capitalRows(capital.sims, capital.reddy, starts)}
+              ownerIn={capital.ownerIn}
+              ownerOut={capital.ownerOut}
+              endsBeforeToday={to < todayString()}
+              onChange={updateStart}
+            />
+          )}
 
           {!singleDay && (
             <BreakdownTable

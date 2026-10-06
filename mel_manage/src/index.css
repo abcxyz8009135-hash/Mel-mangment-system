@@ -392,6 +392,10 @@ h1, h2, h3 { margin: 0; }
 }
 .capital-table tr.capital-total td { border-top: 1px solid var(--border); font-weight: 600; }
 .capital-hint { margin: 10px 0 0; }
+.transfer-hint { margin: 10px 0 0; }
+.sim-balance { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.sim-balance-form { display: flex; align-items: center; gap: 6px; }
+.sim-balance-form input { width: 120px; }
 
 /* ---------- Transfers ---------- */
 .transfer-form { display: flex; flex-direction: column; gap: 12px; }

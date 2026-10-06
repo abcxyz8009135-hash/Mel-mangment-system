@@ -11,4 +11,12 @@ export async function fetchProfiles() {
   return data;
 }
 
+// Everyone's id, name, role and active flag. Works for staff too, so they
+// can pick who a transfer goes to.
+export async function fetchPeople() {
+  const { data, error } = await supabase.rpc('people');
+  if (error) throw new Error(error.message);
+  return data;
+}
+
 export const profileLabel = (p) => `${p.full_name}${p.role === 'admin' ? ' (admin)' : ''}${p.active ? '' : ' — inactive'}`;

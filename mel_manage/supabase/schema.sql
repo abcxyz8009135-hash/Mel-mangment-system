@@ -426,7 +426,7 @@ create trigger sessions_before_update
 -- ---------------------------------------------------------------------
 create table if not exists public.audit_log (
   id               bigint generated always as identity primary key,
-  action           text not null,        -- insert | update | approve | reject | delete
+  action           text not null,        -- insert | update | approve | reject | delete | set_balance
   session_id       bigint,               -- no FK so the log survives deletes
   changed_by       uuid,
   changed_by_name  text,
@@ -475,7 +475,9 @@ create trigger sessions_audit
 
 -- ---------------------------------------------------------------------
 -- Money transfers (telebirr) between the owner, the admin and staff.
--- Admin only. Stored for tracking; they do not affect any calculation.
+-- They move SIM balances (see "SIM balances" below). The admin records
+-- and edits any transfer; staff record transfers from their own SIMs and
+-- see the ones they are part of.
 -- A person side names that person's SIM; the Owner side (user = null)
 -- has no SIM. From Owner = working capital in, to Owner = capital out.
 -- ---------------------------------------------------------------------
@@ -523,7 +525,10 @@ declare
   check_from boolean := true;
   check_to boolean := true;
 begin
-  select * into me from public.profiles where id = auth.uid();
+  select * into me from public.profiles where id = auth.uid() and active;
+  if me.id is null then
+    raise exception 'Your account is not active.';
+  end if;
 
   if tg_op = 'INSERT' then
     new.created_by := me.id;
@@ -593,6 +598,206 @@ create trigger transfers_audit
 
 
 -- ---------------------------------------------------------------------
+-- SIM balances: each SIM's current telebirr balance, kept by the
+-- database. It starts from the SIM's latest reading, which is either
+--   * the end telebirr of its latest approved session, or
+--   * a balance the admin entered by hand on the SIMs page,
+-- whichever is later, and adds transfers received and subtracts
+-- transfers sent after that reading (all transfers if there is none).
+-- On the same day a transfer counts as after a session unless both have
+-- a time and the transfer's is earlier; it counts as after a hand-entered
+-- balance only if its time is later. A session counts as after a
+-- hand-entered balance only if its date is later, or it is the same day
+-- and its time is later.
+-- It is worked out again from scratch whenever a session or transfer on
+-- the SIM changes, so edits, approvals and deletes can't make it drift.
+-- The app can read it but only change it through set_sim_balance().
+-- ---------------------------------------------------------------------
+alter table public.sims add column if not exists balance numeric not null default 0;
+alter table public.sims add column if not exists balance_updated_at timestamptz;
+-- The last balance entered by hand, and the local date and time it was entered.
+alter table public.sims add column if not exists balance_set_amount numeric;
+alter table public.sims add column if not exists balance_set_date date;
+alter table public.sims add column if not exists balance_set_time time;
+
+create or replace function public.refresh_sim_balance(p_sim bigint)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  sim public.sims;
+  last_session public.sessions;
+  use_hand_entered boolean;
+  base numeric;
+  moved numeric;
+begin
+  select * into sim from public.sims where id = p_sim;
+  if sim.id is null then
+    return;
+  end if;
+
+  select * into last_session
+  from public.sessions
+  where sim_id = p_sim and approval_status = 'approved'
+  order by session_date desc, session_slot desc
+  limit 1;
+
+  use_hand_entered := sim.balance_set_date is not null and (
+    last_session.id is null
+    or last_session.session_date < sim.balance_set_date
+    or (last_session.session_date = sim.balance_set_date
+        and (last_session.session_time is null or last_session.session_time <= sim.balance_set_time))
+  );
+
+  if use_hand_entered then
+    base := sim.balance_set_amount;
+    select coalesce(sum(case when t.to_sim_id = p_sim then t.amount else -t.amount end), 0)
+    into moved
+    from public.transfers t
+    where (t.to_sim_id = p_sim or t.from_sim_id = p_sim)
+      and (t.transfer_date > sim.balance_set_date
+           or (t.transfer_date = sim.balance_set_date and t.transfer_time > sim.balance_set_time));
+  else
+    base := public.num_or_zero(last_session.end_values, 'tele');
+    select coalesce(sum(case when t.to_sim_id = p_sim then t.amount else -t.amount end), 0)
+    into moved
+    from public.transfers t
+    where (t.to_sim_id = p_sim or t.from_sim_id = p_sim)
+      and (
+        last_session.id is null
+        or t.transfer_date > last_session.session_date
+        or (t.transfer_date = last_session.session_date
+            and (t.transfer_time is null or last_session.session_time is null
+                 or t.transfer_time >= last_session.session_time))
+      );
+  end if;
+
+  update public.sims
+  set balance = base + moved,
+      balance_updated_at = now()
+  where id = p_sim;
+end;
+$$;
+
+create or replace function public.sessions_refresh_balance()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if tg_op <> 'INSERT' then
+    perform public.refresh_sim_balance(old.sim_id);
+  end if;
+  if tg_op <> 'DELETE' then
+    perform public.refresh_sim_balance(new.sim_id);
+  end if;
+  return null;
+end;
+$$;
+
+drop trigger if exists sessions_refresh_balance on public.sessions;
+create trigger sessions_refresh_balance
+  after insert or update or delete on public.sessions
+  for each row execute function public.sessions_refresh_balance();
+
+create or replace function public.transfers_refresh_balance()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if tg_op <> 'INSERT' then
+    perform public.refresh_sim_balance(old.from_sim_id);
+    perform public.refresh_sim_balance(old.to_sim_id);
+  end if;
+  if tg_op <> 'DELETE' then
+    perform public.refresh_sim_balance(new.from_sim_id);
+    perform public.refresh_sim_balance(new.to_sim_id);
+  end if;
+  return null;
+end;
+$$;
+
+drop trigger if exists transfers_refresh_balance on public.transfers;
+create trigger transfers_refresh_balance
+  after insert or update or delete on public.transfers
+  for each row execute function public.transfers_refresh_balance();
+
+revoke execute on function public.refresh_sim_balance(bigint) from public, anon, authenticated;
+
+-- Admin only: set a SIM's balance by hand. p_date / p_time are the admin's
+-- local date and time, so they line up with session and transfer times.
+-- Each change goes in the change log.
+create or replace function public.set_sim_balance(p_sim bigint, p_amount numeric, p_date date, p_time time)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  old_sim public.sims;
+  who_name text;
+begin
+  if not public.is_admin() then
+    raise exception 'Only the admin can set a SIM balance.';
+  end if;
+  if p_amount is null or p_date is null or p_time is null then
+    raise exception 'Enter the balance.';
+  end if;
+
+  select * into old_sim from public.sims where id = p_sim;
+  if old_sim.id is null then
+    raise exception 'SIM not found.';
+  end if;
+
+  update public.sims
+  set balance_set_amount = p_amount, balance_set_date = p_date, balance_set_time = p_time
+  where id = p_sim;
+  perform public.refresh_sim_balance(p_sim);
+
+  select full_name into who_name from public.profiles where id = auth.uid();
+  insert into public.audit_log (action, changed_by, changed_by_name, old_data, new_data)
+  values (
+    'set_balance', auth.uid(), who_name,
+    jsonb_build_object('sim_id', p_sim, 'balance', old_sim.balance),
+    jsonb_build_object('sim_id', p_sim, 'balance', p_amount, 'date', p_date, 'time', p_time)
+  );
+end;
+$$;
+
+revoke execute on function public.set_sim_balance(bigint, numeric, date, time) from public, anon;
+grant execute on function public.set_sim_balance(bigint, numeric, date, time) to authenticated;
+
+-- Fill in every SIM's balance (on first run, and again on every re-run).
+select public.refresh_sim_balance(id) from public.sims;
+
+
+-- ---------------------------------------------------------------------
+-- Everyone's name, for choosing who a transfer goes to. Staff cannot read
+-- other profiles directly.
+-- ---------------------------------------------------------------------
+create or replace function public.people()
+returns table (id uuid, full_name text, role text, active boolean)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select p.id, p.full_name, p.role, p.active
+  from public.profiles p
+  where public.is_active_user()
+  order by p.active desc, p.full_name;
+$$;
+
+revoke execute on function public.people() from public, anon;
+grant execute on function public.people() to authenticated;
+
+
+-- ---------------------------------------------------------------------
 -- Access rules (row level security)
 -- ---------------------------------------------------------------------
 alter table public.profiles enable row level security;
@@ -603,8 +808,12 @@ alter table public.transfers enable row level security;
 
 -- Logged-out visitors get nothing.
 revoke all on public.profiles, public.sessions, public.audit_log, public.sims, public.transfers from anon;
--- SIMs are deactivated, never deleted.
+-- SIMs are deactivated, never deleted, and their balance is only set by
+-- the database.
 revoke delete on public.sims from authenticated;
+revoke insert, update on public.sims from authenticated;
+grant insert (name, phone, active, assigned_to) on public.sims to authenticated;
+grant update (name, phone, active, assigned_to) on public.sims to authenticated;
 -- Nobody writes to profiles or the log from the app.
 revoke insert, update, delete on public.profiles, public.audit_log from authenticated;
 
@@ -658,12 +867,24 @@ create policy "sims: admin update" on public.sims
   using (public.is_admin())
   with check (public.is_admin());
 
--- Transfers are admin only: staff can neither see nor change them.
+-- The admin sees and changes every transfer. Staff see the transfers they
+-- sent or received, and record new ones from their own SIMs (the trigger
+-- checks the SIM is theirs); they cannot edit or delete.
 drop policy if exists "transfers: admin all" on public.transfers;
 create policy "transfers: admin all" on public.transfers
   for all to authenticated
   using (public.is_admin())
   with check (public.is_admin());
+
+drop policy if exists "transfers: staff read own" on public.transfers;
+create policy "transfers: staff read own" on public.transfers
+  for select to authenticated
+  using (public.is_active_user() and (from_user = auth.uid() or to_user = auth.uid()));
+
+drop policy if exists "transfers: staff send" on public.transfers;
+create policy "transfers: staff send" on public.transfers
+  for insert to authenticated
+  with check (public.is_active_user() and from_user = auth.uid());
 
 drop policy if exists "audit: admin read" on public.audit_log;
 create policy "audit: admin read" on public.audit_log

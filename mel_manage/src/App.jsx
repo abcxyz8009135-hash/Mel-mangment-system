@@ -32,7 +32,7 @@ function App() {
   if (loading) return <div className="login-wrap"><p className="muted">Loading…</p></div>
   if (!profile) return <Login />
 
-  const pages = isAdmin ? ['Home', 'History', 'Approvals', 'Summary', 'Transfers', 'SIMs'] : ['Home', 'History']
+  const pages = isAdmin ? ['Home', 'History', 'Approvals', 'Summary', 'Transfers', 'SIMs'] : ['Home', 'History', 'Transfers']
   const current = pages.includes(page) ? page : 'Home'
 
   const navigate = (p) => {

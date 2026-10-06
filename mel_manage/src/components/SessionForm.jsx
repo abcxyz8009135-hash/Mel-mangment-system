@@ -11,7 +11,9 @@ import { useAuth } from '../auth/AuthContext'
 // note, preview and submit.
 // onSubmit(values) must return { type, text } or throw an Error.
 // With prefillStart, the start point is filled from the previous approved
-// session's end point (or 0) whenever the date or session changes.
+// session's end point (or 0) whenever the date, session or SIM changes;
+// once a SIM is chosen, its Tele Birr comes from that SIM's balance, which
+// already includes transfers.
 function SessionForm({ initial, submitLabel, onSubmit, onCancel, intro, requireSim = true, prefillStart = false }) {
   const { profile, isAdmin } = useAuth()
   const [date, setDate] = useState(initial.date)
@@ -45,6 +47,8 @@ function SessionForm({ initial, submitLabel, onSubmit, onCancel, intro, requireS
         const values = Object.fromEntries(
           Object.keys(EMPTY_VALUES).map((key) => [key, String(previous?.[key] ?? 0)]),
         )
+        const sim = sims?.find((s) => String(s.id) === simId)
+        if (sim) values.tele = String(Number(sim.balance) || 0)
         setPrefilled(values)
         setStart(values)
         setResult(null)
@@ -56,7 +60,7 @@ function SessionForm({ initial, submitLabel, onSubmit, onCancel, intro, requireS
     return () => {
       cancelled = true
     }
-  }, [prefillStart, date, session])
+  }, [prefillStart, date, session, simId, sims])
 
   // Active SIMs (staff: only those assigned to them), plus the one already
   // on this session if it has since been deactivated or reassigned.

@@ -6,7 +6,7 @@ import { simLabel } from '../functions/simsApi'
 // One side of a transfer: the Owner, or a person and one of their SIMs.
 // `keep` is the side as first loaded, so an edited transfer keeps a person
 // or SIM that has since been deactivated or reassigned.
-function PartyPicker({ id, title, value, keep, profiles, sims, onChange }) {
+function PartyPicker({ id, title, value, keep, profiles, sims, allowOwner = true, onChange }) {
   const people = profiles.filter((p) => p.active || p.id === keep.user)
   const simOptions =
     value.user && value.user !== OWNER
@@ -29,7 +29,7 @@ function PartyPicker({ id, title, value, keep, profiles, sims, onChange }) {
         <label htmlFor={`${id}-user`}>Person</label>
         <select id={`${id}-user`} value={value.user} onChange={(e) => changeUser(e.target.value)}>
           <option value="">Choose…</option>
-          <option value={OWNER}>Owner</option>
+          {allowOwner && <option value={OWNER}>Owner</option>}
           {people.map((p) => <option key={p.id} value={p.id}>{profileLabel(p)}</option>)}
         </select>
       </div>
@@ -55,7 +55,9 @@ function PartyPicker({ id, title, value, keep, profiles, sims, onChange }) {
 }
 
 // Add / edit form. onSubmit(values) must throw an Error on failure.
-function TransferForm({ initial, profiles, sims, submitLabel, onSubmit, onCancel }) {
+// With `sender` (a staff member's id), money can only come from that
+// person's own SIMs.
+function TransferForm({ initial, profiles, sims, sender, submitLabel, onSubmit, onCancel }) {
   const [date, setDate] = useState(initial.date)
   const [time, setTime] = useState(initial.time)
   const [from, setFrom] = useState({ user: initial.fromUser, simId: initial.fromSimId })
@@ -127,8 +129,9 @@ function TransferForm({ initial, profiles, sims, submitLabel, onSubmit, onCancel
           title="From"
           value={from}
           keep={{ user: initial.fromUser, simId: initial.fromSimId }}
-          profiles={profiles}
+          profiles={sender ? profiles.filter((p) => p.id === sender) : profiles}
           sims={sims}
+          allowOwner={!sender}
           onChange={setFrom}
         />
         <PartyPicker

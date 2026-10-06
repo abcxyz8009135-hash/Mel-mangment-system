@@ -31,4 +31,18 @@ export async function updateSim(id, fields) {
   return run(supabase.from('sims').update(fields).eq('id', id).select().single());
 }
 
+// Admin only: set a SIM's balance by hand. It is stamped with this
+// device's local date and time, like sessions and transfers.
+export async function setSimBalance(id, amount) {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const { error } = await supabase.rpc('set_sim_balance', {
+    p_sim: id,
+    p_amount: amount,
+    p_date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+    p_time: `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`,
+  });
+  if (error) throw new Error(error.message);
+}
+
 export const simLabel = (sim) => (sim.phone ? `${sim.name} (${sim.phone})` : sim.name);

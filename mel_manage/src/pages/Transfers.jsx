@@ -1,26 +1,30 @@
 import { useCallback, useEffect, useState } from 'react'
 import TransferForm from '../components/TransferForm'
 import { fetchTransfersInRange, createTransfer, updateTransfer, deleteTransfer, OWNER, KIND_LABELS } from '../functions/transfersApi'
-import { fetchProfiles } from '../functions/profilesApi'
-import { fetchSims } from '../functions/simsApi'
+import { fetchPeople } from '../functions/profilesApi'
+import { fetchSims, simLabel } from '../functions/simsApi'
 import { fmt, todayString, nowTimeString } from '../functions/sessionOptions'
+import { useAuth } from '../auth/AuthContext'
 
 const monthStart = () => `${todayString().slice(0, 8)}01`
 
-const newTransfer = () => ({
+const newTransfer = (fromUser = '', fromSimId = null) => ({
   date: todayString(),
   time: nowTimeString(),
-  fromUser: '',
-  fromSimId: null,
+  fromUser,
+  fromSimId,
   toUser: '',
   toSimId: null,
   amount: '',
   note: '',
 })
 
-// Telebirr transfers between the Owner, the admin and staff. Tracking only:
-// they do not affect any session or capital calculation.
+// Telebirr transfers between the Owner, the admin and staff. Each one moves
+// the balance of the SIMs on either side (kept by the database).
+// The admin sees, adds, edits and deletes every transfer. Staff send from
+// their own SIMs and see the transfers they are part of.
 function Transfers() {
+  const { profile, isAdmin } = useAuth()
   const [profiles, setProfiles] = useState([])
   const [sims, setSims] = useState([])
   const [from, setFrom] = useState(monthStart)
@@ -32,13 +36,25 @@ function Transfers() {
   const invalidRange = !from || !to || from > to
 
   useEffect(() => {
-    Promise.all([fetchProfiles(), fetchSims()])
-      .then(([p, s]) => {
-        setProfiles(p)
-        setSims(s)
-      })
-      .catch((err) => setNotice({ type: 'error', text: `Could not load users and SIMs: ${err.message}` }))
+    fetchPeople()
+      .then(setProfiles)
+      .catch((err) => setNotice({ type: 'error', text: `Could not load users: ${err.message}` }))
   }, [])
+
+  // SIMs are reloaded after every change so the balances stay current.
+  const reloadSims = useCallback(
+    () =>
+      fetchSims()
+        .then(setSims)
+        .catch((err) => setNotice({ type: 'error', text: `Could not load SIMs: ${err.message}` })),
+    [],
+  )
+
+  useEffect(() => {
+    reloadSims()
+  }, [reloadSims])
+
+  const ownSims = sims.filter((s) => s.active && s.assigned_to === profile.id)
 
   const reload = useCallback(() => {
     if (invalidRange) return Promise.resolve()
@@ -65,14 +81,14 @@ function Transfers() {
     await createTransfer(values)
     setNotice({ type: 'success', text: 'Transfer saved.' })
     setFormKey((k) => k + 1)
-    await reload()
+    await Promise.all([reload(), reloadSims()])
   }
 
   const handleEdit = async (values) => {
     await updateTransfer(editing.id, values)
     setEditing(null)
     setNotice({ type: 'success', text: 'Transfer updated.' })
-    await reload()
+    await Promise.all([reload(), reloadSims()])
   }
 
   const handleDelete = async (t) => {
@@ -81,7 +97,7 @@ function Transfers() {
       await deleteTransfer(t.id)
       if (editing?.id === t.id) setEditing(null)
       setNotice({ type: 'success', text: 'Transfer deleted.' })
-      await reload()
+      await Promise.all([reload(), reloadSims()])
     } catch (err) {
       setNotice({ type: 'error', text: err.message })
     }
@@ -112,15 +128,42 @@ function Transfers() {
           />
         ) : (
           <TransferForm
-            key={`new-${formKey}`}
-            initial={newTransfer()}
+            // Staff start with their own SIM picked once the SIMs have loaded.
+            key={`new-${formKey}-${sims.length}`}
+            initial={
+              isAdmin
+                ? newTransfer()
+                : newTransfer(profile.id, ownSims.length === 1 ? ownSims[0].id : null)
+            }
             profiles={profiles}
             sims={sims}
+            sender={isAdmin ? undefined : profile.id}
             submitLabel="Save transfer"
             onSubmit={handleAdd}
           />
         )}
+        {!isAdmin && (
+          <p className="muted transfer-hint">
+            Send from your own SIM. Only the admin can change or delete a transfer once it is saved.
+          </p>
+        )}
       </div>
+
+      {!isAdmin && ownSims.length > 0 && (
+        <div className="card">
+          <h2>Your SIMs</h2>
+          <table className="table">
+            <thead>
+              <tr><th>SIM</th><th>Balance</th></tr>
+            </thead>
+            <tbody>
+              {ownSims.map((s) => (
+                <tr key={s.id}><td>{simLabel(s)}</td><td>{fmt(s.balance)}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {notice && <p className={`notice ${notice.type}`}>{notice.text}</p>}
 
@@ -157,7 +200,10 @@ function Transfers() {
             <div className="table-scroll">
               <table className="table transfer-table">
                 <thead>
-                  <tr><th>Date</th><th>From</th><th>To</th><th>Amount</th><th>Type</th><th>Note</th><th></th></tr>
+                  <tr>
+                    <th>Date</th><th>From</th><th>To</th><th>Amount</th><th>Type</th><th>Note</th>
+                    {isAdmin && <th></th>}
+                  </tr>
                 </thead>
                 <tbody>
                   {data.transfers.map((t) => (
@@ -177,18 +223,20 @@ function Transfers() {
                         )}
                       </td>
                       <td className="transfer-note">{t.note}</td>
-                      <td className="sim-actions">
-                        <button
-                          className="btn btn-small"
-                          onClick={() => {
-                            setEditing(t)
-                            window.scrollTo({ top: 0, behavior: 'smooth' })
-                          }}
-                        >
-                          Edit
-                        </button>
-                        <button className="btn btn-small btn-danger" onClick={() => handleDelete(t)}>Delete</button>
-                      </td>
+                      {isAdmin && (
+                        <td className="sim-actions">
+                          <button
+                            className="btn btn-small"
+                            onClick={() => {
+                              setEditing(t)
+                              window.scrollTo({ top: 0, behavior: 'smooth' })
+                            }}
+                          >
+                            Edit
+                          </button>
+                          <button className="btn btn-small btn-danger" onClick={() => handleDelete(t)}>Delete</button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>

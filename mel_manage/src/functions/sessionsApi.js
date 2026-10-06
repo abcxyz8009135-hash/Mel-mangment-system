@@ -72,6 +72,20 @@ export async function fetchSessionsInRange(from, to) {
   return rows.map(fromRow);
 }
 
+// End values of the latest approved session overall, or null if there is none.
+export async function fetchLatestEndValues() {
+  const rows = await run(
+    supabase
+      .from('sessions')
+      .select('end_values')
+      .eq('approval_status', 'approved')
+      .order('session_date', { ascending: false })
+      .order('session_slot', { ascending: false })
+      .limit(1),
+  );
+  return rows.length ? rows[0].end_values : null;
+}
+
 // End values of the latest approved session before this date + slot, or
 // null if there is none. Used to prefill the next session's start point.
 export async function fetchPreviousEndValues(date, slot) {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { fetchSims, createSim, updateSim } from '../functions/simsApi'
+import { fetchSims, createSim, updateSim, setSimBalance } from '../functions/simsApi'
 import { fetchProfiles, profileLabel } from '../functions/profilesApi'
+import { fmt } from '../functions/sessionOptions'
 
 const EMPTY_SIM = { name: '', phone: '', assignedTo: '' }
 
@@ -21,6 +22,8 @@ function Sims() {
   const [newSim, setNewSim] = useState(EMPTY_SIM)
   const [editingId, setEditingId] = useState(null)
   const [draft, setDraft] = useState(EMPTY_SIM)
+  // { id, value } while a balance is being typed in.
+  const [balanceEdit, setBalanceEdit] = useState(null)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState(null)
 
@@ -79,6 +82,17 @@ function Sims() {
     )
   }
 
+  const handleSetBalance = async (sim) => {
+    const amount = Number(balanceEdit.value)
+    if (balanceEdit.value.trim() === '' || !Number.isFinite(amount)) {
+      setNotice({ type: 'error', text: 'Enter the balance as a number.' })
+      return
+    }
+    if (await perform(() => setSimBalance(sim.id, amount), `${sim.name} balance set to ${fmt(amount)}.`)) {
+      setBalanceEdit(null)
+    }
+  }
+
   const toggleActive = (sim) =>
     perform(
       () => updateSim(sim.id, { active: !sim.active }),
@@ -130,14 +144,16 @@ function Sims() {
         <h2>SIMs</h2>
         <p className="muted sim-hint">
           Staff only see the SIMs assigned to them on the session form. Deactivated SIMs disappear from the
-          session form but stay on sessions that already use them.
+          session form but stay on sessions that already use them. Balance is the telebirr on the SIM now. Use Set
+          to enter it by hand; after that it updates by itself — transfers received and sent move it, and the end of
+          the next approved session replaces it.
         </p>
         {data.loading && <p className="empty">Loading…</p>}
         {!data.loading && data.sims.length === 0 && <p className="empty">No SIMs yet.</p>}
         {data.sims.length > 0 && (
           <table className="table sim-table">
             <thead>
-              <tr><th>Name</th><th>Phone number</th><th>Assigned to</th><th>Status</th><th></th></tr>
+              <tr><th>Name</th><th>Phone number</th><th>Balance</th><th>Assigned to</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
               {data.sims.map((sim) =>
@@ -158,6 +174,7 @@ function Sims() {
                         onChange={(e) => setDraft((prev) => ({ ...prev, phone: e.target.value }))}
                       />
                     </td>
+                    <td>{fmt(sim.balance)}</td>
                     <td></td>
                     <td></td>
                     <td className="sim-actions">
@@ -169,6 +186,39 @@ function Sims() {
                   <tr key={sim.id} className={sim.active ? '' : 'inactive'}>
                     <td>{sim.name}</td>
                     <td>{sim.phone || '—'}</td>
+                    <td>
+                      {balanceEdit?.id === sim.id ? (
+                        <form
+                          className="sim-balance-form"
+                          onSubmit={(e) => {
+                            e.preventDefault()
+                            handleSetBalance(sim)
+                          }}
+                        >
+                          <input
+                            aria-label={`${sim.name} balance`}
+                            inputMode="decimal"
+                            autoFocus
+                            value={balanceEdit.value}
+                            onChange={(e) => setBalanceEdit({ id: sim.id, value: e.target.value })}
+                          />
+                          <button className="btn btn-small btn-primary" type="submit" disabled={busy}>Save</button>
+                          <button className="btn btn-small btn-ghost" type="button" onClick={() => setBalanceEdit(null)}>
+                            Cancel
+                          </button>
+                        </form>
+                      ) : (
+                        <span className="sim-balance">
+                          {fmt(sim.balance)}
+                          <button
+                            className="btn btn-small btn-ghost"
+                            onClick={() => setBalanceEdit({ id: sim.id, value: String(Number(sim.balance) || 0) })}
+                          >
+                            Set
+                          </button>
+                        </span>
+                      )}
+                    </td>
                     <td>
                       <AssigneeSelect
                         label={`${sim.name} assigned to`}
