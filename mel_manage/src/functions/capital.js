@@ -1,22 +1,19 @@
 const num = (v) => Number(v) || 0;
 
-// Capital rows: one per SIM plus Reddy. Starting is typed in by the admin
-// (`starts`, by row key); Current is each SIM's stored balance and the
-// Reddy of the latest approved session. Inactive SIMs only show while
-// they still hold money.
-export function capitalRows(sims, latestReddy, starts = {}) {
+// Capital rows from a starting point to now: one per SIM plus Reddy.
+// `start` is { reddy, sims: { [simId]: balance } } at the starting point;
+// Current is each SIM's stored balance and `currentReddy`. Inactive SIMs
+// only show while they hold money at either end.
+export function capitalRows(sims, start, currentReddy) {
   const simRows = sims
-    .filter((s) => s.active || num(s.balance) !== 0)
-    .map((s) => ({ key: `sim-${s.id}`, label: s.name, current: num(s.balance) }))
+    .map((s) => ({ key: `sim-${s.id}`, label: s.name, active: s.active, start: num(start.sims?.[s.id]), current: num(s.balance) }))
+    .filter((r) => r.active || r.start !== 0 || r.current !== 0)
     .sort((a, b) => a.label.localeCompare(b.label));
-  return [...simRows, { key: 'reddy', label: 'Reddy', current: num(latestReddy) }].map((r) => ({
-    ...r,
-    start: starts[r.key] ?? '',
-  }));
+  return [...simRows, { key: 'reddy', label: 'Reddy', start: num(start.reddy), current: num(currentReddy) }];
 }
 
 export function capitalTotals(rows) {
-  const start = rows.reduce((sum, r) => sum + (parseFloat(r.start) || 0), 0);
-  const current = rows.reduce((sum, r) => sum + num(r.current), 0);
+  const start = rows.reduce((sum, r) => sum + r.start, 0);
+  const current = rows.reduce((sum, r) => sum + r.current, 0);
   return { start, current, net: current - start };
 }

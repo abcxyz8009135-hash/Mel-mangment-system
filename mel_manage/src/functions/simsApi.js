@@ -45,4 +45,12 @@ export async function setSimBalance(id, amount) {
   if (error) throw new Error(error.message);
 }
 
+// Admin only: every SIM's balance and the Reddy right after a transfer
+// (that transfer included): { reddy, sims: { [simId]: balance } }.
+export async function fetchCapitalAfterTransfer(transferId) {
+  const { data, error } = await supabase.rpc('capital_after_transfer', { p_transfer: transferId });
+  if (error) throw new Error(error.message);
+  return data;
+}
+
 export const simLabel = (sim) => (sim.phone ? `${sim.name} (${sim.phone})` : sim.name);

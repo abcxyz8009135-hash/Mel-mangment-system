@@ -61,6 +61,25 @@ export async function fetchTransfersInRange(from, to) {
   return rows.map(fromRow);
 }
 
+// Every Working capital in and Capital out transfer, newest first.
+export async function fetchOwnerTransfers() {
+  const rows = await run(
+    supabase
+      .from('transfers')
+      .select('*')
+      .not('kind', 'is', null)
+      .order('transfer_date', { ascending: false })
+      .order('transfer_time', { ascending: false, nullsFirst: false })
+      .order('id', { ascending: false }),
+  );
+  return rows.map(fromRow);
+}
+
+// Order of transfers in time: date, then time (no time = end of the day),
+// then the order they were entered. Same as the database.
+export const compareTransfers = (a, b) =>
+  a.date.localeCompare(b.date) || (a.time || '24:00').localeCompare(b.time || '24:00') || a.id - b.id;
+
 export async function createTransfer(values) {
   return fromRow(await run(supabase.from('transfers').insert(toRow(values)).select().single()));
 }

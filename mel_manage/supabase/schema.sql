@@ -598,27 +598,117 @@ create trigger transfers_audit
 
 
 -- ---------------------------------------------------------------------
--- SIM balances: each SIM's current telebirr balance, kept by the
--- database. It starts from the SIM's latest reading, which is either
---   * the end telebirr of its latest approved session, or
+-- SIM balances: each SIM's telebirr balance, kept by the database.
+-- A SIM's balance at any moment starts from its latest reading before
+-- that moment, which is either
+--   * the end telebirr of an approved session on the SIM, or
 --   * a balance the admin entered by hand on the SIMs page,
--- whichever is later, and adds transfers received and subtracts
--- transfers sent after that reading (all transfers if there is none).
--- On the same day a transfer counts as after a session unless both have
--- a time and the transfer's is earlier; it counts as after a hand-entered
--- balance only if its time is later. A session counts as after a
--- hand-entered balance only if its date is later, or it is the same day
--- and its time is later.
--- It is worked out again from scratch whenever a session or transfer on
--- the SIM changes, so edits, approvals and deletes can't make it drift.
--- The app can read it but only change it through set_sim_balance().
+-- whichever is later (a hand entry wins a tie), then adds transfers
+-- received and subtracts transfers sent after that reading (all
+-- transfers if there is none).
+-- Order on the same day: a session with no time counts as at the start
+-- of the day, a transfer with no time as at the end of it. A transfer
+-- counts as after a hand entry only if its time is later.
+-- sims.balance is the balance now. It is worked out again from scratch
+-- whenever a session, transfer or hand entry on the SIM changes, so
+-- edits, approvals and deletes can't make it drift. The app can read it
+-- but only change it through set_sim_balance().
 -- ---------------------------------------------------------------------
 alter table public.sims add column if not exists balance numeric not null default 0;
 alter table public.sims add column if not exists balance_updated_at timestamptz;
--- The last balance entered by hand, and the local date and time it was entered.
+-- Superseded by sim_balance_entries; kept so values entered before that
+-- table existed are copied into it below.
 alter table public.sims add column if not exists balance_set_amount numeric;
 alter table public.sims add column if not exists balance_set_date date;
 alter table public.sims add column if not exists balance_set_time time;
+
+-- Every balance entered by hand, with the admin's local date and time.
+create table if not exists public.sim_balance_entries (
+  id          bigint generated always as identity primary key,
+  sim_id      bigint not null references public.sims (id) on delete restrict,
+  amount      numeric not null,
+  entry_date  date not null,
+  entry_time  time not null,
+  created_by  uuid references public.profiles (id) on delete restrict,
+  created_at  timestamptz not null default now()
+);
+
+create index if not exists sim_balance_entries_sim_idx
+  on public.sim_balance_entries (sim_id, entry_date desc, entry_time desc);
+
+insert into public.sim_balance_entries (sim_id, amount, entry_date, entry_time)
+select s.id, s.balance_set_amount, s.balance_set_date, s.balance_set_time
+from public.sims s
+where s.balance_set_date is not null
+  and not exists (select 1 from public.sim_balance_entries e where e.sim_id = s.id);
+
+-- Balance of one SIM. With no date: now (every reading and transfer).
+-- With a date (and time): at that moment. With p_transfer as well, the
+-- moment is right after that transfer, so it is counted and later
+-- transfers at the same time are not.
+create or replace function public.sim_balance_at(
+  p_sim bigint, p_date date default null, p_time time default null, p_transfer bigint default null)
+returns numeric
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  limit_time time := coalesce(p_time, '24:00');
+  last_session public.sessions;
+  last_entry public.sim_balance_entries;
+  base numeric;
+  moved numeric;
+begin
+  select * into last_session
+  from public.sessions s
+  where s.sim_id = p_sim and s.approval_status = 'approved'
+    and (p_date is null or s.session_date < p_date
+         or (s.session_date = p_date and coalesce(s.session_time, '00:00') <= limit_time))
+  order by s.session_date desc, s.session_slot desc
+  limit 1;
+
+  select * into last_entry
+  from public.sim_balance_entries e
+  where e.sim_id = p_sim
+    and (p_date is null or e.entry_date < p_date or (e.entry_date = p_date and e.entry_time <= limit_time))
+  order by e.entry_date desc, e.entry_time desc, e.id desc
+  limit 1;
+
+  if last_entry.id is not null and (
+       last_session.id is null
+       or last_session.session_date < last_entry.entry_date
+       or (last_session.session_date = last_entry.entry_date
+           and coalesce(last_session.session_time, '00:00') <= last_entry.entry_time)) then
+    base := last_entry.amount;
+    select coalesce(sum(case when t.to_sim_id = p_sim then t.amount else -t.amount end), 0)
+    into moved
+    from public.transfers t
+    where (t.to_sim_id = p_sim or t.from_sim_id = p_sim)
+      and (t.transfer_date > last_entry.entry_date
+           or (t.transfer_date = last_entry.entry_date and t.transfer_time > last_entry.entry_time))
+      and (p_date is null
+           or (t.transfer_date, coalesce(t.transfer_time, '24:00'), t.id)
+              <= (p_date, limit_time, coalesce(p_transfer, t.id)));
+  else
+    base := public.num_or_zero(last_session.end_values, 'tele');
+    select coalesce(sum(case when t.to_sim_id = p_sim then t.amount else -t.amount end), 0)
+    into moved
+    from public.transfers t
+    where (t.to_sim_id = p_sim or t.from_sim_id = p_sim)
+      and (last_session.id is null
+           or t.transfer_date > last_session.session_date
+           or (t.transfer_date = last_session.session_date
+               and coalesce(t.transfer_time, '24:00') >= coalesce(last_session.session_time, '00:00')))
+      and (p_date is null
+           or (t.transfer_date, coalesce(t.transfer_time, '24:00'), t.id)
+              <= (p_date, limit_time, coalesce(p_transfer, t.id)));
+  end if;
+
+  return base + moved;
+end;
+$$;
 
 create or replace function public.refresh_sim_balance(p_sim bigint)
 returns void
@@ -626,56 +716,12 @@ language plpgsql
 security definer
 set search_path = public
 as $$
-declare
-  sim public.sims;
-  last_session public.sessions;
-  use_hand_entered boolean;
-  base numeric;
-  moved numeric;
 begin
-  select * into sim from public.sims where id = p_sim;
-  if sim.id is null then
+  if p_sim is null then
     return;
   end if;
-
-  select * into last_session
-  from public.sessions
-  where sim_id = p_sim and approval_status = 'approved'
-  order by session_date desc, session_slot desc
-  limit 1;
-
-  use_hand_entered := sim.balance_set_date is not null and (
-    last_session.id is null
-    or last_session.session_date < sim.balance_set_date
-    or (last_session.session_date = sim.balance_set_date
-        and (last_session.session_time is null or last_session.session_time <= sim.balance_set_time))
-  );
-
-  if use_hand_entered then
-    base := sim.balance_set_amount;
-    select coalesce(sum(case when t.to_sim_id = p_sim then t.amount else -t.amount end), 0)
-    into moved
-    from public.transfers t
-    where (t.to_sim_id = p_sim or t.from_sim_id = p_sim)
-      and (t.transfer_date > sim.balance_set_date
-           or (t.transfer_date = sim.balance_set_date and t.transfer_time > sim.balance_set_time));
-  else
-    base := public.num_or_zero(last_session.end_values, 'tele');
-    select coalesce(sum(case when t.to_sim_id = p_sim then t.amount else -t.amount end), 0)
-    into moved
-    from public.transfers t
-    where (t.to_sim_id = p_sim or t.from_sim_id = p_sim)
-      and (
-        last_session.id is null
-        or t.transfer_date > last_session.session_date
-        or (t.transfer_date = last_session.session_date
-            and (t.transfer_time is null or last_session.session_time is null
-                 or t.transfer_time >= last_session.session_time))
-      );
-  end if;
-
   update public.sims
-  set balance = base + moved,
+  set balance = public.sim_balance_at(p_sim),
       balance_updated_at = now()
   where id = p_sim;
 end;
@@ -727,6 +773,7 @@ create trigger transfers_refresh_balance
   after insert or update or delete on public.transfers
   for each row execute function public.transfers_refresh_balance();
 
+revoke execute on function public.sim_balance_at(bigint, date, time, bigint) from public, anon, authenticated;
 revoke execute on function public.refresh_sim_balance(bigint) from public, anon, authenticated;
 
 -- Admin only: set a SIM's balance by hand. p_date / p_time are the admin's
@@ -754,9 +801,8 @@ begin
     raise exception 'SIM not found.';
   end if;
 
-  update public.sims
-  set balance_set_amount = p_amount, balance_set_date = p_date, balance_set_time = p_time
-  where id = p_sim;
+  insert into public.sim_balance_entries (sim_id, amount, entry_date, entry_time, created_by)
+  values (p_sim, p_amount, p_date, p_time, auth.uid());
   perform public.refresh_sim_balance(p_sim);
 
   select full_name into who_name from public.profiles where id = auth.uid();
@@ -771,6 +817,52 @@ $$;
 
 revoke execute on function public.set_sim_balance(bigint, numeric, date, time) from public, anon;
 grant execute on function public.set_sim_balance(bigint, numeric, date, time) to authenticated;
+
+-- Admin only: the capital right after a Working capital in transfer, for
+-- the Summary page: every SIM's balance at that moment (that transfer
+-- included) and the Reddy of the latest approved session before it.
+-- Returns { "reddy": n, "sims": { "<sim id>": n, ... } }.
+create or replace function public.capital_after_transfer(p_transfer bigint)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  t public.transfers;
+  reddy_session public.sessions;
+begin
+  if not public.is_admin() then
+    raise exception 'Only the admin can see capital.';
+  end if;
+
+  select * into t from public.transfers where id = p_transfer;
+  if t.id is null then
+    raise exception 'Transfer not found.';
+  end if;
+
+  select * into reddy_session
+  from public.sessions s
+  where s.approval_status = 'approved'
+    and (s.session_date < t.transfer_date
+         or (s.session_date = t.transfer_date
+             and coalesce(s.session_time, '00:00') <= coalesce(t.transfer_time, '24:00')))
+  order by s.session_date desc, s.session_slot desc
+  limit 1;
+
+  return jsonb_build_object(
+    'reddy', public.num_or_zero(reddy_session.end_values, 'reddy'),
+    'sims', coalesce(
+      (select jsonb_object_agg(s.id, public.sim_balance_at(s.id, t.transfer_date, t.transfer_time, t.id))
+       from public.sims s),
+      '{}'::jsonb)
+  );
+end;
+$$;
+
+revoke execute on function public.capital_after_transfer(bigint) from public, anon;
+grant execute on function public.capital_after_transfer(bigint) to authenticated;
 
 -- Fill in every SIM's balance (on first run, and again on every re-run).
 select public.refresh_sim_balance(id) from public.sims;
@@ -805,9 +897,12 @@ alter table public.sessions enable row level security;
 alter table public.audit_log enable row level security;
 alter table public.sims enable row level security;
 alter table public.transfers enable row level security;
+alter table public.sim_balance_entries enable row level security;
 
 -- Logged-out visitors get nothing.
 revoke all on public.profiles, public.sessions, public.audit_log, public.sims, public.transfers from anon;
+-- Hand-entered balances are only read and written by the functions above.
+revoke all on public.sim_balance_entries from anon, authenticated;
 -- SIMs are deactivated, never deleted, and their balance is only set by
 -- the database.
 revoke delete on public.sims from authenticated;
