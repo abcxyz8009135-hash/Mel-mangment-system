@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import './App.css'
 import Header from './components/Header'
 import Home from './pages/Home'
-import History from './pages/History'
-import Approvals from './pages/Approvals'
-import Summary from './pages/Summary'
-import Sims from './pages/Sims'
-import Transfers from './pages/Transfers'
 import Login from './pages/Login'
 import { useAuth } from './auth/AuthContext'
 import { fetchPendingCount } from './functions/sessionsApi'
+
+// Loaded when first opened; Home and Login are needed straight away.
+const History = lazy(() => import('./pages/History'))
+const Approvals = lazy(() => import('./pages/Approvals'))
+const Summary = lazy(() => import('./pages/Summary'))
+const Sims = lazy(() => import('./pages/Sims'))
+const Transfers = lazy(() => import('./pages/Transfers'))
 
 const PENDING_REFRESH_MS = 60_000
 
@@ -44,12 +46,14 @@ function App() {
     <>
       <Header pages={pages} page={current} onNavigate={navigate} pendingCount={pendingCount} />
       <main className="container">
-        {current === 'Home' && <Home onSubmitted={isAdmin ? refreshPending : undefined} />}
-        {current === 'History' && <History onChanged={isAdmin ? refreshPending : undefined} />}
-        {current === 'Approvals' && <Approvals onChanged={refreshPending} />}
-        {current === 'Summary' && <Summary />}
-        {current === 'Transfers' && <Transfers />}
-        {current === 'SIMs' && <Sims />}
+        <Suspense fallback={<p className="muted">Loading…</p>}>
+          {current === 'Home' && <Home onSubmitted={isAdmin ? refreshPending : undefined} />}
+          {current === 'History' && <History onChanged={isAdmin ? refreshPending : undefined} />}
+          {current === 'Approvals' && <Approvals onChanged={refreshPending} />}
+          {current === 'Summary' && <Summary />}
+          {current === 'Transfers' && <Transfers />}
+          {current === 'SIMs' && <Sims />}
+        </Suspense>
       </main>
     </>
   )

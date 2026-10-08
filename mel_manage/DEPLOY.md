@@ -120,6 +120,8 @@ The calculation exists in two places and **both must be changed together**:
 2. `calc_session()` in `supabase/schema.sql`: the one that decides Match / Over / Short.
    After editing, re-run the file in the SQL Editor **of each Supabase project**.
 
+Run `npm test` afterwards: it fails if the two copies give different results.
+
 ## Free plan notes
 
 - Supabase's free plan allows 2 active projects per account, and pauses a project after about a week with no activity. Daily use keeps it awake; a paused project can be resumed from the dashboard.
